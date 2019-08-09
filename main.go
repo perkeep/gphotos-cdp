@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/chromedp/cdproto/input"
-	"github.com/chromedp/cdproto/page"
+	//	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 	"github.com/chromedp/chromedp/kb"
 	"go4.org/lock"
@@ -61,11 +61,13 @@ func main() {
 	}
 
 	download := chromedp.ActionFunc(func(ctx context.Context) error {
+		// TODO(mpl): instead of tempdir name, probably use dated name instead?
 		dir, err := ioutil.TempDir(s.dlDir, "")
 		if err != nil {
 			return err
 		}
-		page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(dir)
+		// TODO(mpl): that does not seem to be working here. maybe we need to do it before navigating?
+		// page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(dir)
 		// TODO(mpl): cleanup dir
 
 		keyD, ok := kb.Keys['D']
@@ -100,17 +102,30 @@ func main() {
 			return err
 		}
 		defer dirfd.Close()
-		timeout := time.Now().Add(30 * time.Second)
+		started := false
+		endTimeout := time.Now().Add(30 * time.Second)
+		startTimeout := time.Now().Add(5 * time.Second)
+		tick := 500 * time.Millisecond
 		for {
-			if time.Now().After(timeout) {
+			time.Sleep(tick)
+			if time.Now().After(endTimeout) {
 				return fmt.Errorf("timeout while downloading in %q", dir)
+			}
+			if !started && time.Now().After(startTimeout) {
+				return fmt.Errorf("downloading in %q took too long to start", dir)
 			}
 			entries, err := dirfd.Readdirnames(-1)
 			if err != nil {
 				return err
 			}
-			if len(entries) != 1 {
-				return fmt.Errorf("more or less than one file (%d) in download dir %q", len(entries), dir)
+			if len(entries) > 1 {
+				return fmt.Errorf("more than one file (%d) in download dir %q", len(entries), dir)
+			}
+			if !started {
+				if len(entries) > 0 {
+					started = true
+				}
+				continue
 			}
 			if !strings.HasSuffix(entries[0], ".crdownload") {
 				// download is over
@@ -120,14 +135,25 @@ func main() {
 		return nil
 	})
 
+	firstNav := func(ctx context.Context) chromedp.ActionFunc {
+		return func(ctx context.Context) error {
+			chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
+			log.Printf("sent key")
+			chromedp.Sleep(500 * time.Millisecond).Do(ctx)
+			chromedp.KeyEvent("\n").Do(ctx)
+			chromedp.Sleep(500 * time.Millisecond).Do(ctx)
+			return nil
+		}
+	}
+
 	navRight := chromedp.ActionFunc(func(ctx context.Context) error {
 		chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
 		log.Printf("sent key")
 		chromedp.Sleep(500 * time.Millisecond).Do(ctx)
-		chromedp.KeyEvent("\n").Do(ctx)
-		chromedp.Sleep(500 * time.Millisecond).Do(ctx)
 		return nil
 	})
+
+	_, _ = download, navRight
 
 	navRightN := func(N int, ctx context.Context) chromedp.ActionFunc {
 		n := 0
@@ -136,14 +162,17 @@ func main() {
 				if n >= N {
 					break
 				}
-				if err := navRight.Do(ctx); err != nil {
-					return err
-				}
+				chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
 				chromedp.Sleep(500 * time.Millisecond).Do(ctx)
-				if err := download.Do(ctx); err != nil {
-					return err
-				}
-				chromedp.Sleep(5 * time.Second)
+				/*
+					if err := navRight.Do(ctx); err != nil {
+						return err
+					}
+					chromedp.Sleep(500 * time.Millisecond).Do(ctx)
+					if err := download.Do(ctx); err != nil {
+						return err
+					}
+				*/
 				n++
 			}
 			return nil
@@ -162,6 +191,7 @@ func main() {
 			log.Printf("body is ready")
 			return nil
 		}),
+		firstNav(ctx),
 		navRightN(5, ctx),
 	); err != nil {
 		log.Fatal(err)
