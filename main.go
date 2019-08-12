@@ -20,6 +20,8 @@ import (
 
 var startFlag = flag.String("start", "", "skip all the photos more recent than the one at that URL")
 
+var lastPhoto string
+
 func main() {
 	flag.Parse()
 	s, err := NewSession()
@@ -44,7 +46,8 @@ func main() {
 			return nil
 		}),
 		chromedp.Navigate("https://photos.google.com/"),
-		chromedp.Sleep(30000*time.Millisecond),
+		//		chromedp.Sleep(30000*time.Millisecond),
+		chromedp.Sleep(15000*time.Millisecond),
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			log.Printf("post-navigate")
 			return nil
@@ -86,55 +89,75 @@ func main() {
 			}
 		}
 
-		dirfd, err := os.Open(dir)
-		if err != nil {
-			return err
-		}
-		defer dirfd.Close()
+		// TODO(mpl): use ioutil.Readdir.
+		// Also haha, there is a .DS_Store file
 		started := false
 		endTimeout := time.Now().Add(30 * time.Second)
 		startTimeout := time.Now().Add(5 * time.Second)
 		tick := 500 * time.Millisecond
 		for {
-			time.Sleep(tick)
-			if time.Now().After(endTimeout) {
-				return fmt.Errorf("timeout while downloading in %q", dir)
+			foo := func() (bool, error) {
+				dirfd, err := os.Open(dir)
+				if err != nil {
+					return false, err
+				}
+				defer dirfd.Close()
+				time.Sleep(tick)
+				println("TICK")
+				if time.Now().After(endTimeout) {
+					return false, fmt.Errorf("timeout while downloading in %q", dir)
+				}
+				if !started && time.Now().After(startTimeout) {
+					return false, fmt.Errorf("downloading in %q took too long to start", dir)
+				}
+				entries, err := dirfd.Readdirnames(-1)
+				if err != nil {
+					return false, err
+				}
+				if len(entries) < 1 {
+					return false, nil
+				}
+				if len(entries) > 1 {
+					for _, v := range entries {
+						println(v)
+					}
+					return false, fmt.Errorf("more than one file (%d) in download dir %q", len(entries), dir)
+				}
+				if !started {
+					if len(entries) > 0 {
+						started = true
+					}
+					return false, nil
+				}
+				println(entries[0])
+				if !strings.HasSuffix(entries[0], ".crdownload") {
+					// download is over
+					return true, nil
+				}
+				return false, nil
 			}
-			if !started && time.Now().After(startTimeout) {
-				return fmt.Errorf("downloading in %q took too long to start", dir)
-			}
-			entries, err := dirfd.Readdirnames(-1)
+			done, err := foo()
 			if err != nil {
 				return err
 			}
-			if len(entries) > 1 {
-				return fmt.Errorf("more than one file (%d) in download dir %q", len(entries), dir)
-			}
-			if !started {
-				if len(entries) > 0 {
-					started = true
-				}
-				continue
-			}
-			if !strings.HasSuffix(entries[0], ".crdownload") {
-				// download is over
+			if done {
 				break
 			}
 		}
 		return nil
 	}
 
-//	firstNav := func(ctx context.Context) chromedp.ActionFunc {
-//		return func(ctx context.Context) error {
+	//	firstNav := func(ctx context.Context) chromedp.ActionFunc {
+	//		return func(ctx context.Context) error {
 	firstNav := func(ctx context.Context) error {
-			chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
-			log.Printf("sent key")
-			chromedp.Sleep(500 * time.Millisecond).Do(ctx)
-			chromedp.KeyEvent("\n").Do(ctx)
-			chromedp.Sleep(500 * time.Millisecond).Do(ctx)
-			return nil
+		chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
+		log.Printf("sent key")
+		chromedp.Sleep(500 * time.Millisecond).Do(ctx)
+		chromedp.KeyEvent("\n").Do(ctx)
+		chromedp.Sleep(500 * time.Millisecond).Do(ctx)
+		return nil
 	}
-//	}
+	//	}
 
 	navRight := chromedp.ActionFunc(func(ctx context.Context) error {
 		chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
@@ -142,8 +165,6 @@ func main() {
 		chromedp.Sleep(500 * time.Millisecond).Do(ctx)
 		return nil
 	})
-
-	_, _ = download, navRight
 
 	navRightN := func(N int, ctx context.Context) chromedp.ActionFunc {
 		n := 0
@@ -168,6 +189,9 @@ func main() {
 			return nil
 		}
 	}
+
+	_, _, _ = download, navRight, navRightN
+
 	if err := chromedp.Run(ctx,
 		// TODO(mpl): change dl dir for each photo, to detect it's finished downloading.
 		// TODO(mpl): add policy func over photo URL, which decides what we do (with?)
@@ -181,23 +205,43 @@ func main() {
 			log.Printf("body is ready")
 			return nil
 		}),
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			if err := firstNav(ctx); err != nil {
+				return err
+			}
+			return download(ctx, s.dlDir)
+		}),
 
 		chromedp.ActionFunc(func(ctx context.Context) error {
-			// TODO(mpl): instead of tempdir name, probably use dated name instead?
 			dir, err := ioutil.TempDir(s.dlDir, "")
 			if err != nil {
 				return err
 			}
-			// TODO(mpl): that does not seem to be working here. maybe we need to do it before navigating?
-			// Maybe if we put each nav+download into their own chromedp.Run ?
 			page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(dir)
-			// TODO(mpl): cleanup dir
-			if err := firstNav(ctx); err != nil {
-				return err
-			}
+			chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
+			chromedp.Sleep(500 * time.Millisecond).Do(ctx)
 			return download(ctx, dir)
 		}),
-		navRightN(5, ctx),
+
+		/*
+
+			chromedp.ActionFunc(func(ctx context.Context) error {
+				// TODO(mpl): instead of tempdir name, probably use dated name instead?
+				dir, err := ioutil.TempDir(s.dlDir, "")
+				if err != nil {
+					return err
+				}
+				// TODO(mpl): that does not seem to be working here. maybe we need to do it before navigating?
+				// Maybe if we put each nav+download into their own chromedp.Run ?
+				page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(dir)
+				// TODO(mpl): cleanup dir
+				if err := firstNav(ctx); err != nil {
+					return err
+				}
+				return download(ctx, dir)
+			}),
+			navRightN(5, ctx),
+		*/
 	); err != nil {
 		log.Fatal(err)
 	}
@@ -217,10 +261,13 @@ type Session struct {
 }
 
 func NewSession() (*Session, error) {
-	dir, err := ioutil.TempDir("", "footest")
-	if err != nil {
-		return nil, err
-	}
+	/*
+		dir, err := ioutil.TempDir("", "footest")
+		if err != nil {
+			return nil, err
+		}
+	*/
+	dir := "/Users/mpl/chromedp"
 	s := &Session{
 		tempDir: dir,
 		dlDir:   filepath.Join(os.Getenv("HOME"), "Downloads", "pk-gphotos"),
@@ -235,7 +282,6 @@ func (s *Session) NewContext() (context.Context, context.CancelFunc) {
 	ctx, cancel := chromedp.NewExecAllocator(context.Background(),
 		chromedp.NoFirstRun,
 		chromedp.NoDefaultBrowserCheck,
-		//chromedp.UserDataDir("/Users/bradfitz/.config/perkeep/google-photos-chrome-profile"),
 		chromedp.UserDataDir(s.tempDir),
 
 		chromedp.Flag("disable-background-networking", true),
@@ -270,6 +316,3 @@ func (s *Session) NewContext() (context.Context, context.CancelFunc) {
 func (s *Session) Shutdown() {
 	s.parentCancel()
 }
-
-
-
