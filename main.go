@@ -20,7 +20,7 @@ import (
 
 var startFlag = flag.String("start", "", "skip all the photos more recent than the one at that URL")
 
-var lastPhoto string
+var secondDir string
 
 func main() {
 	flag.Parse()
@@ -217,12 +217,18 @@ func main() {
 			if err != nil {
 				return err
 			}
+			secondDir = dir
 			page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(dir)
+			return nil
 			chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
 			chromedp.Sleep(500 * time.Millisecond).Do(ctx)
 			return download(ctx, dir)
 		}),
-
+		chromedp.Navigate("https://photos.google.com/photo/AF1QipMtEd38o-lZxDOfME7fJKKjQuNEHTe0MbhJYAIO"),
+		chromedp.Sleep(5000*time.Millisecond),
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			return download(ctx, secondDir)
+		}),
 		/*
 
 			chromedp.ActionFunc(func(ctx context.Context) error {
