@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -14,10 +13,9 @@ import (
 	"time"
 
 	"github.com/chromedp/cdproto/input"
-	//	"github.com/chromedp/cdproto/page"
+	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 	"github.com/chromedp/chromedp/kb"
-	"go4.org/lock"
 )
 
 var startFlag = flag.String("start", "", "skip all the photos more recent than the one at that URL")
@@ -60,16 +58,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	download := chromedp.ActionFunc(func(ctx context.Context) error {
-		// TODO(mpl): instead of tempdir name, probably use dated name instead?
-		dir, err := ioutil.TempDir(s.dlDir, "")
-		if err != nil {
-			return err
-		}
-		// TODO(mpl): that does not seem to be working here. maybe we need to do it before navigating?
-		// page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(dir)
-		// TODO(mpl): cleanup dir
-
+	download := func(ctx context.Context, dir string) error {
 		keyD, ok := kb.Keys['D']
 		if !ok {
 			log.Fatal("NO D KEY")
@@ -133,18 +122,19 @@ func main() {
 			}
 		}
 		return nil
-	})
+	}
 
-	firstNav := func(ctx context.Context) chromedp.ActionFunc {
-		return func(ctx context.Context) error {
+//	firstNav := func(ctx context.Context) chromedp.ActionFunc {
+//		return func(ctx context.Context) error {
+	firstNav := func(ctx context.Context) error {
 			chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
 			log.Printf("sent key")
 			chromedp.Sleep(500 * time.Millisecond).Do(ctx)
 			chromedp.KeyEvent("\n").Do(ctx)
 			chromedp.Sleep(500 * time.Millisecond).Do(ctx)
 			return nil
-		}
 	}
+//	}
 
 	navRight := chromedp.ActionFunc(func(ctx context.Context) error {
 		chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
@@ -181,7 +171,7 @@ func main() {
 	if err := chromedp.Run(ctx,
 		// TODO(mpl): change dl dir for each photo, to detect it's finished downloading.
 		// TODO(mpl): add policy func over photo URL, which decides what we do (with?)
-		//		page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(s.dlDir),
+		page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(s.dlDir),
 		chromedp.Navigate("https://photos.google.com/"),
 		chromedp.Sleep(5000*time.Millisecond),
 		// the `ERROR: unhandled page event *page.EventDownloadWillBegin` error does show up, but it does not actually prevent the download, so who cares?
@@ -191,7 +181,22 @@ func main() {
 			log.Printf("body is ready")
 			return nil
 		}),
-		firstNav(ctx),
+
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			// TODO(mpl): instead of tempdir name, probably use dated name instead?
+			dir, err := ioutil.TempDir(s.dlDir, "")
+			if err != nil {
+				return err
+			}
+			// TODO(mpl): that does not seem to be working here. maybe we need to do it before navigating?
+			// Maybe if we put each nav+download into their own chromedp.Run ?
+			page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(dir)
+			// TODO(mpl): cleanup dir
+			if err := firstNav(ctx); err != nil {
+				return err
+			}
+			return download(ctx, dir)
+		}),
 		navRightN(5, ctx),
 	); err != nil {
 		log.Fatal(err)
@@ -266,96 +271,5 @@ func (s *Session) Shutdown() {
 	s.parentCancel()
 }
 
-func (s *Session) fixPreferences() {
-	ctx, _ := s.NewContext()
-	//	defer cancel()
 
-	// Looks like go4.org/lock does not work to test against SingletonLock
-	println("WE SHOULD HAVE A LOCK ON " + filepath.Join(s.tempDir, "SingletonLock"))
-	if err := chromedp.Run(ctx,
-		chromedp.Navigate("chrome://settings/"),
-		//		chromedp.Sleep(100*time.Millisecond),
-		chromedp.Sleep(time.Minute),
-	); err != nil {
-		panic(err)
-	}
 
-	var prefPath string
-	t0 := time.Now()
-	var lastLog time.Time
-	for prefPath == "" {
-		filepath.Walk(s.tempDir, func(path string, fi os.FileInfo, err error) error {
-			if filepath.Base(path) == "Preferences" {
-				//				cancel()
-				log.Printf("%s", path)
-				prefPath = path
-				return nil
-			}
-			return nil
-		})
-		time.Sleep(50 * time.Millisecond)
-		if lastLog.Before(time.Now().Add(-1 * time.Second)) {
-			log.Printf("waiting for preference file to be written")
-			lastLog = time.Now()
-		}
-	}
-	//	cancel()
-	if err := chromedp.Cancel(ctx); err != nil {
-		log.Fatalf("Error when cancelling: %v", err)
-	}
-	s.Shutdown()
-	log.Printf("Got pref file %s after %v", prefPath, time.Since(t0).Round(25*time.Millisecond))
-	//	time.Sleep(time.Minute)
-	for {
-		break
-		if cl, err := lock.Lock(filepath.Join(s.tempDir, "SingletonLock")); err == nil {
-			defer cl.Close()
-			println("got LOCK on ", filepath.Join(s.tempDir, "SingletonLock"))
-			time.Sleep(time.Minute)
-			break
-		}
-		time.Sleep(time.Second)
-		println("waiting on lock file")
-	}
-	return
-
-	dlDir := filepath.Join(s.tempDir, "Downloads")
-	log.Printf("Download dir: %v", dlDir)
-	if err := os.MkdirAll(dlDir, 0755); err != nil {
-		log.Fatal(err)
-	}
-	if err := updateDownloadDir(prefPath, dlDir); err != nil {
-		panic(err)
-	}
-}
-
-func updateDownloadDir(prefFile, dlDir string) error {
-	oldData, err := ioutil.ReadFile(prefFile)
-	if err != nil {
-		return err
-	}
-
-	preferences := make(map[string]interface{})
-	if err := json.Unmarshal(oldData, &preferences); err != nil {
-		return err
-	}
-
-	for _, k := range []string{"download", "savefile"} {
-		if _, ok := preferences[k]; !ok {
-			preferences[k] = map[string]interface{}{}
-		}
-		jo := preferences[k].(map[string]interface{})
-		jo["default_directory"] = dlDir
-		if k == "download" {
-			jo["directory_upgrade"] = true
-		}
-	}
-
-	newData, err := json.Marshal(preferences)
-	if err != nil {
-		return err
-	}
-	println(newData)
-	//	return ioutil.WriteFile(prefFile, newData, 0600)
-	return ioutil.WriteFile(prefFile, oldData, 0600)
-}
