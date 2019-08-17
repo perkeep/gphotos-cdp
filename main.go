@@ -20,8 +20,6 @@ import (
 
 var startFlag = flag.String("start", "", "skip all the photos more recent than the one at that URL")
 
-var secondDir string
-
 func main() {
 	flag.Parse()
 	s, err := NewSession()
@@ -47,7 +45,7 @@ func main() {
 		}),
 		chromedp.Navigate("https://photos.google.com/"),
 		//		chromedp.Sleep(30000*time.Millisecond),
-		chromedp.Sleep(15000*time.Millisecond),
+		chromedp.Sleep(5000*time.Millisecond),
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			log.Printf("post-navigate")
 			return nil
@@ -190,68 +188,86 @@ func main() {
 		}
 	}
 
-	_, _, _ = download, navRight, navRightN
+	_, _, _, _ = download, navRight, navRightN, firstNav
 
-	if err := chromedp.Run(ctx,
-		// TODO(mpl): change dl dir for each photo, to detect it's finished downloading.
-		// TODO(mpl): add policy func over photo URL, which decides what we do (with?)
-		page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(s.dlDir),
-		chromedp.Navigate("https://photos.google.com/"),
-		chromedp.Sleep(5000*time.Millisecond),
-		// the `ERROR: unhandled page event *page.EventDownloadWillBegin` error does show up, but it does not actually prevent the download, so who cares?
+	photosList := []string{
+		"https://photos.google.com/photo/AF1QipPMVPPg5TI2-cnAj-gDXYZL_7fG95jqNDCNb6WP",
+		"https://photos.google.com/photo/AF1QipOnmwDjAWN2yN1hTlrD8vxdfCdbA0mcoF8CNFm0",
+		"https://photos.google.com/photo/AF1QipPNNMjO3KT58o52V2WVzATr0zMKbmTQ-I2PPGyf",
+	}
 
-		chromedp.WaitReady("body", chromedp.ByQuery),
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			log.Printf("body is ready")
-			return nil
-		}),
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			if err := firstNav(ctx); err != nil {
-				return err
-			}
-			return download(ctx, s.dlDir)
-		}),
+	var currentDir string
+	for _, v := range photosList {
+		if err := chromedp.Run(ctx,
+			// This one here works, so why not below??
+			// page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath("/Users/mpl/Downloads/pk-gphotos"),
+			// TODO(mpl): change dl dir for each photo, to detect it's finished downloading.
+			// TODO(mpl): add policy func over photo URL, which decides what we do (with?)
+			/*
+				page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(s.dlDir),
+				chromedp.Navigate("https://photos.google.com/"),
+				chromedp.Sleep(5000*time.Millisecond),
+				// the `ERROR: unhandled page event *page.EventDownloadWillBegin` error does show up, but it does not actually prevent the download, so who cares?
 
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			dir, err := ioutil.TempDir(s.dlDir, "")
-			if err != nil {
-				return err
-			}
-			secondDir = dir
-			page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(dir)
-			return nil
-			chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
-			chromedp.Sleep(500 * time.Millisecond).Do(ctx)
-			return download(ctx, dir)
-		}),
-		chromedp.Navigate("https://photos.google.com/photo/AF1QipMtEd38o-lZxDOfME7fJKKjQuNEHTe0MbhJYAIO"),
-		chromedp.Sleep(5000*time.Millisecond),
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			return download(ctx, secondDir)
-		}),
-		/*
+				chromedp.WaitReady("body", chromedp.ByQuery),
+				chromedp.ActionFunc(func(ctx context.Context) error {
+					log.Printf("body is ready")
+					return nil
+				}),
+				chromedp.ActionFunc(func(ctx context.Context) error {
+					if err := firstNav(ctx); err != nil {
+						return err
+					}
+					return download(ctx, s.dlDir)
+				}),
+			*/
 
 			chromedp.ActionFunc(func(ctx context.Context) error {
-				// TODO(mpl): instead of tempdir name, probably use dated name instead?
 				dir, err := ioutil.TempDir(s.dlDir, "")
 				if err != nil {
 					return err
 				}
-				// TODO(mpl): that does not seem to be working here. maybe we need to do it before navigating?
-				// Maybe if we put each nav+download into their own chromedp.Run ?
-				page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(dir)
-				// TODO(mpl): cleanup dir
-				if err := firstNav(ctx); err != nil {
-					return err
-				}
-				return download(ctx, dir)
+				currentDir = dir
+				return nil
 			}),
-			navRightN(5, ctx),
-		*/
-	); err != nil {
-		log.Fatal(err)
+			chromedp.ActionFunc(func(ctx context.Context) error {
+				println("CURRENTDIR: ", currentDir)
+				page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(currentDir)
+				return nil
+			}),
+			// WTF IS 2019/08/18 00:49:30 downloadPath not provided (-32000)
+			// maybe wrong chmod on the dir?? nope.
+			//			page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(foo),
+			chromedp.Navigate(v),
+			chromedp.Sleep(5000*time.Millisecond),
+			chromedp.WaitReady("body", chromedp.ByQuery),
+			chromedp.ActionFunc(func(ctx context.Context) error {
+				return download(ctx, currentDir)
+			}),
+			/*
+
+				chromedp.ActionFunc(func(ctx context.Context) error {
+					// TODO(mpl): instead of tempdir name, probably use dated name instead?
+					dir, err := ioutil.TempDir(s.dlDir, "")
+					if err != nil {
+						return err
+					}
+					// TODO(mpl): that does not seem to be working here. maybe we need to do it before navigating?
+					// Maybe if we put each nav+download into their own chromedp.Run ?
+					page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(dir)
+					// TODO(mpl): cleanup dir
+					if err := firstNav(ctx); err != nil {
+						return err
+					}
+					return download(ctx, dir)
+				}),
+				navRightN(5, ctx),
+			*/
+		); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("OK")
 	}
-	fmt.Println("OK")
 
 	// Next: keys
 	// https://github.com/chromedp/chromedp/issues/400
