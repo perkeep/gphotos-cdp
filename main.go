@@ -82,7 +82,9 @@ func main() {
 		log.Fatal(err)
 	}
 
-	download := func(ctx context.Context, dir string) (string, error) {
+	//	download := func(ctx context.Context, dir string) (string, error) {
+	download := func(ctx context.Context) (string, error) {
+		dir := s.dlDir
 		keyD, ok := kb.Keys['D']
 		if !ok {
 			log.Fatal("NO D KEY")
@@ -160,6 +162,29 @@ func main() {
 		}
 	}
 
+	mvDl := func(dlFile string) func(ctx context.Context) error {
+		return func(ctx context.Context) error {
+			dir, err := ioutil.TempDir(s.dlDir, "")
+			if err != nil {
+				return err
+			}
+			if err := os.Rename(filepath.Join(s.dlDir, dlFile), filepath.Join(dir, dlFile)); err != nil {
+				return err
+			}
+			println("NEW FILE: ", filepath.Join(dir, dlFile))
+			return nil
+		}
+	}
+
+	dlAndMove := func(ctx context.Context) error {
+		var err error
+		dlFile, err := download(ctx)
+		if err != nil {
+			return err
+		}
+		return mvDl(dlFile)(ctx)
+	}
+
 	//	firstNav := func(ctx context.Context) chromedp.ActionFunc {
 	//		return func(ctx context.Context) error {
 	firstNav := func(ctx context.Context) error {
@@ -172,97 +197,58 @@ func main() {
 	}
 	//	}
 
-	navRight := chromedp.ActionFunc(func(ctx context.Context) error {
+	navRight := func(ctx context.Context) error {
 		chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
 		log.Printf("sent key")
-		chromedp.Sleep(500 * time.Millisecond).Do(ctx)
+		chromedp.Sleep(5000 * time.Millisecond).Do(ctx)
+		chromedp.WaitReady("body", chromedp.ByQuery)
 		return nil
-	})
+	}
 
-	navRightN := func(N int, ctx context.Context) chromedp.ActionFunc {
-		n := 0
-		return func(ctx context.Context) error {
-			for {
-				if n >= N {
-					break
-				}
-				chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
-				chromedp.Sleep(500 * time.Millisecond).Do(ctx)
-				/*
-					if err := navRight.Do(ctx); err != nil {
+	/*
+		navRightN := func(N int, ctx context.Context) chromedp.ActionFunc {
+			n := 0
+			return func(ctx context.Context) error {
+				for {
+					if n >= N {
+						break
+					}
+					chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
+					chromedp.Sleep(500 * time.Millisecond).Do(ctx)
+					if err := navRight(ctx); err != nil {
 						return err
 					}
 					chromedp.Sleep(500 * time.Millisecond).Do(ctx)
 					if err := download.Do(ctx); err != nil {
 						return err
 					}
-				*/
-				n++
+					n++
+				}
+				return nil
 			}
+		}
+	*/
+
+	_, _, _ = download, navRight, firstNav
+
+	if err := chromedp.Run(ctx,
+		page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(s.dlDir),
+		// TODO(mpl): add policy func over photo URL, which decides what we do (with?)
+		chromedp.Navigate("https://photos.google.com/"),
+		chromedp.Sleep(5000*time.Millisecond),
+		chromedp.WaitReady("body", chromedp.ByQuery),
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			log.Printf("body is ready")
 			return nil
-		}
+		}),
+		chromedp.ActionFunc(firstNav),
+		chromedp.ActionFunc(dlAndMove),
+		chromedp.ActionFunc(navRight),
+		chromedp.ActionFunc(dlAndMove),
+	); err != nil {
+		log.Fatal(err)
 	}
-
-	_, _, _, _ = download, navRight, navRightN, firstNav
-
-	photosList := []string{
-		"https://photos.google.com/photo/AF1QipPMVPPg5TI2-cnAj-gDXYZL_7fG95jqNDCNb6WP",
-		"https://photos.google.com/photo/AF1QipOnmwDjAWN2yN1hTlrD8vxdfCdbA0mcoF8CNFm0",
-		"https://photos.google.com/photo/AF1QipPNNMjO3KT58o52V2WVzATr0zMKbmTQ-I2PPGyf",
-	}
-
-	var currentFile string
-	for _, v := range photosList {
-		if err := chromedp.Run(ctx,
-			page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(s.dlDir),
-			// TODO(mpl): add policy func over photo URL, which decides what we do (with?)
-			/*
-				page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(s.dlDir),
-				chromedp.Navigate("https://photos.google.com/"),
-				chromedp.Sleep(5000*time.Millisecond),
-				// the `ERROR: unhandled page event *page.EventDownloadWillBegin` error does show up, but it does not actually prevent the download, so who cares?
-
-				chromedp.WaitReady("body", chromedp.ByQuery),
-				chromedp.ActionFunc(func(ctx context.Context) error {
-					log.Printf("body is ready")
-					return nil
-				}),
-				chromedp.ActionFunc(func(ctx context.Context) error {
-					if err := firstNav(ctx); err != nil {
-						return err
-					}
-					return download(ctx, s.dlDir)
-				}),
-			*/
-
-			chromedp.Navigate(v),
-			chromedp.Sleep(5000*time.Millisecond),
-			chromedp.WaitReady("body", chromedp.ByQuery),
-			chromedp.ActionFunc(func(ctx context.Context) error {
-				var err error
-				dlFile, err := download(ctx, s.dlDir)
-				if err != nil {
-					return err
-				}
-				currentFile = dlFile
-				return nil
-			}),
-			chromedp.ActionFunc(func(ctx context.Context) error {
-				dir, err := ioutil.TempDir(s.dlDir, "")
-				if err != nil {
-					return err
-				}
-				if err := os.Rename(filepath.Join(s.dlDir, currentFile), filepath.Join(dir, currentFile)); err != nil {
-					return err
-				}
-				println("NEW FILE: ", filepath.Join(dir, currentFile))
-				return nil
-			}),
-		); err != nil {
-			log.Fatal(err)
-		}
-		fmt.Println("OK")
-	}
+	fmt.Println("OK")
 
 	// Next: keys
 	// https://github.com/chromedp/chromedp/issues/400
