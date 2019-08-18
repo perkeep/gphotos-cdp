@@ -20,6 +20,25 @@ import (
 
 var startFlag = flag.String("start", "", "skip all the photos more recent than the one at that URL")
 
+func (s *Session) cleanDlDir() error {
+	if s.dlDir == "" {
+		return nil
+	}
+	entries, err := ioutil.ReadDir(s.dlDir)
+	if err != nil {
+		return err
+	}
+	for _, v := range entries {
+		if v.IsDir() {
+			continue
+		}
+		if err := os.Remove(filepath.Join(s.dlDir, v.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func main() {
 	flag.Parse()
 	s, err := NewSession()
@@ -31,6 +50,10 @@ func main() {
 	log.Printf("Dir: %v", s.tempDir)
 
 	//	s.fixPreferences()
+
+	if err := s.cleanDlDir(); err != nil {
+		log.Fatal(err)
+	}
 
 	ctx, cancel := s.NewContext()
 	defer cancel()
@@ -59,7 +82,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	download := func(ctx context.Context, dir string) error {
+	download := func(ctx context.Context, dir string) (string, error) {
 		keyD, ok := kb.Keys['D']
 		if !ok {
 			log.Fatal("NO D KEY")
@@ -83,7 +106,7 @@ func main() {
 		for _, ev := range []*input.DispatchKeyEventParams{&down, &up} {
 			log.Printf("Event: %+v", *ev)
 			if err := ev.Do(ctx); err != nil {
-				return err
+				return "", err
 			}
 		}
 
@@ -94,55 +117,47 @@ func main() {
 		startTimeout := time.Now().Add(5 * time.Second)
 		tick := 500 * time.Millisecond
 		for {
-			foo := func() (bool, error) {
-				dirfd, err := os.Open(dir)
-				if err != nil {
-					return false, err
-				}
-				defer dirfd.Close()
-				time.Sleep(tick)
-				println("TICK")
-				if time.Now().After(endTimeout) {
-					return false, fmt.Errorf("timeout while downloading in %q", dir)
-				}
-				if !started && time.Now().After(startTimeout) {
-					return false, fmt.Errorf("downloading in %q took too long to start", dir)
-				}
-				entries, err := dirfd.Readdirnames(-1)
-				if err != nil {
-					return false, err
-				}
-				if len(entries) < 1 {
-					return false, nil
-				}
-				if len(entries) > 1 {
-					for _, v := range entries {
-						println(v)
-					}
-					return false, fmt.Errorf("more than one file (%d) in download dir %q", len(entries), dir)
-				}
-				if !started {
-					if len(entries) > 0 {
-						started = true
-					}
-					return false, nil
-				}
-				println(entries[0])
-				if !strings.HasSuffix(entries[0], ".crdownload") {
-					// download is over
-					return true, nil
-				}
-				return false, nil
+			time.Sleep(tick)
+			println("TICK")
+			if time.Now().After(endTimeout) {
+				return "", fmt.Errorf("timeout while downloading in %q", dir)
 			}
-			done, err := foo()
+
+			if !started && time.Now().After(startTimeout) {
+				return "", fmt.Errorf("downloading in %q took too long to start", dir)
+			}
+			entries, err := ioutil.ReadDir(dir)
 			if err != nil {
-				return err
+				return "", err
 			}
-			if done {
-				break
+			var fileEntries []string
+			for _, v := range entries {
+				if v.IsDir() {
+					continue
+				}
+				fileEntries = append(fileEntries, v.Name())
+			}
+			if len(fileEntries) < 1 {
+				continue
+			}
+			if !started {
+				if len(fileEntries) > 0 {
+					started = true
+				}
+				continue
+			}
+			if len(fileEntries) > 1 {
+				for _, v := range entries {
+					println(v)
+				}
+				return "", fmt.Errorf("more than one file (%d) in download dir %q", len(fileEntries), dir)
+			}
+			println(fileEntries[0])
+			if !strings.HasSuffix(fileEntries[0], ".crdownload") {
+				// download is over
+				return fileEntries[0], nil
 			}
 		}
-		return nil
 	}
 
 	//	firstNav := func(ctx context.Context) chromedp.ActionFunc {
@@ -196,12 +211,10 @@ func main() {
 		"https://photos.google.com/photo/AF1QipPNNMjO3KT58o52V2WVzATr0zMKbmTQ-I2PPGyf",
 	}
 
-	var currentDir string
+	var currentFile string
 	for _, v := range photosList {
 		if err := chromedp.Run(ctx,
-			// This one here works, so why not below??
-			// page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath("/Users/mpl/Downloads/pk-gphotos"),
-			// TODO(mpl): change dl dir for each photo, to detect it's finished downloading.
+			page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(s.dlDir),
 			// TODO(mpl): add policy func over photo URL, which decides what we do (with?)
 			/*
 				page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(s.dlDir),
@@ -222,47 +235,29 @@ func main() {
 				}),
 			*/
 
+			chromedp.Navigate(v),
+			chromedp.Sleep(5000*time.Millisecond),
+			chromedp.WaitReady("body", chromedp.ByQuery),
+			chromedp.ActionFunc(func(ctx context.Context) error {
+				var err error
+				dlFile, err := download(ctx, s.dlDir)
+				if err != nil {
+					return err
+				}
+				currentFile = dlFile
+				return nil
+			}),
 			chromedp.ActionFunc(func(ctx context.Context) error {
 				dir, err := ioutil.TempDir(s.dlDir, "")
 				if err != nil {
 					return err
 				}
-				currentDir = dir
+				if err := os.Rename(filepath.Join(s.dlDir, currentFile), filepath.Join(dir, currentFile)); err != nil {
+					return err
+				}
+				println("NEW FILE: ", filepath.Join(dir, currentFile))
 				return nil
 			}),
-			chromedp.ActionFunc(func(ctx context.Context) error {
-				println("CURRENTDIR: ", currentDir)
-				page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(currentDir)
-				return nil
-			}),
-			// WTF IS 2019/08/18 00:49:30 downloadPath not provided (-32000)
-			// maybe wrong chmod on the dir?? nope.
-			//			page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(foo),
-			chromedp.Navigate(v),
-			chromedp.Sleep(5000*time.Millisecond),
-			chromedp.WaitReady("body", chromedp.ByQuery),
-			chromedp.ActionFunc(func(ctx context.Context) error {
-				return download(ctx, currentDir)
-			}),
-			/*
-
-				chromedp.ActionFunc(func(ctx context.Context) error {
-					// TODO(mpl): instead of tempdir name, probably use dated name instead?
-					dir, err := ioutil.TempDir(s.dlDir, "")
-					if err != nil {
-						return err
-					}
-					// TODO(mpl): that does not seem to be working here. maybe we need to do it before navigating?
-					// Maybe if we put each nav+download into their own chromedp.Run ?
-					page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(dir)
-					// TODO(mpl): cleanup dir
-					if err := firstNav(ctx); err != nil {
-						return err
-					}
-					return download(ctx, dir)
-				}),
-				navRightN(5, ctx),
-			*/
 		); err != nil {
 			log.Fatal(err)
 		}
