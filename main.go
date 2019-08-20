@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -53,8 +54,8 @@ func main() {
 			return nil
 		}),
 		chromedp.Navigate("https://photos.google.com/"),
-		chromedp.Sleep(30000*time.Millisecond),
-		// chromedp.Sleep(5000*time.Millisecond),
+		// chromedp.Sleep(30000*time.Millisecond),
+		chromedp.Sleep(5000*time.Millisecond),
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			log.Printf("post-navigate")
 			return nil
@@ -66,6 +67,36 @@ func main() {
 		}),
 	); err != nil {
 		log.Fatal(err)
+	}
+
+	navEnd := func(ctx context.Context) error {
+		keyEnd, ok := kb.Keys['\u0305']
+		if !ok {
+			return errors.New("no End key")
+		}
+
+		down := input.DispatchKeyEventParams{
+			Key:  keyEnd.Key,
+			Code: keyEnd.Code,
+			// Some github issue says to remove NativeVirtualKeyCode, but it does not change anything.
+			NativeVirtualKeyCode:  keyEnd.Native,
+			WindowsVirtualKeyCode: keyEnd.Windows,
+			Type:                  input.KeyDown,
+		}
+		if runtime.GOOS == "darwin" {
+			down.NativeVirtualKeyCode = 0
+		}
+		up := down
+		up.Type = input.KeyUp
+
+		for _, ev := range []*input.DispatchKeyEventParams{&down, &up} {
+			log.Printf("Event: %+v", *ev)
+			if err := ev.Do(ctx); err != nil {
+				return err
+			}
+		}
+		time.Sleep(5 * time.Second)
+		return nil
 	}
 
 	download := func(ctx context.Context) (string, error) {
@@ -203,6 +234,7 @@ func main() {
 	}
 
 	if err := chromedp.Run(ctx,
+		chromedp.ActionFunc(navEnd),
 		page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(s.dlDir),
 		// TODO(mpl): add policy func over photo URL, which decides what we do with the downloaded file. default policy is storing it on disk.
 		chromedp.Navigate("https://photos.google.com/"),
@@ -212,9 +244,13 @@ func main() {
 			log.Printf("body is ready")
 			return nil
 		}),
-		chromedp.ActionFunc(firstNav),
-		chromedp.ActionFunc(dlAndMove),
-		chromedp.ActionFunc(navRightN(*nItemsFlag-1)),
+		chromedp.KeyEvent(kb.End),
+		chromedp.Sleep(10000*time.Millisecond),
+		/*
+			chromedp.ActionFunc(firstNav),
+			chromedp.ActionFunc(dlAndMove),
+			chromedp.ActionFunc(navRightN(*nItemsFlag-1)),
+		*/
 	); err != nil {
 		log.Fatal(err)
 	}
@@ -223,6 +259,8 @@ func main() {
 	// Next: keys
 	// https://github.com/chromedp/chromedp/issues/400
 	// https://godoc.org/github.com/chromedp/chromedp/kb
+
+	_, _ = firstNav, navRightN
 
 }
 
