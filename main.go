@@ -210,9 +210,20 @@ func main() {
 		return nil
 	}
 
-	navRightN := func(N int) func(context.Context) error {
+	navLeft := func(ctx context.Context) error {
+		chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
+		log.Printf("sent key")
+		chromedp.Sleep(5000 * time.Millisecond).Do(ctx)
+		chromedp.WaitReady("body", chromedp.ByQuery)
+		return nil
+	}
+
+	navN := func(direction string, N int) func(context.Context) error {
 		n := 0
 		return func(ctx context.Context) error {
+			if direction != "left" && direction != "right" {
+				return errors.New("wrong direction, pun intended")
+			}
 			if N == 0 {
 				return nil
 			}
@@ -220,8 +231,14 @@ func main() {
 				if N > 0 && n >= N {
 					break
 				}
-				if err := navRight(ctx); err != nil {
-					return err
+				if direction == "right" {
+					if err := navRight(ctx); err != nil {
+						return err
+					}
+				} else {
+					if err := navLeft(ctx); err != nil {
+						return err
+					}
 				}
 				// TODO(mpl): deal with getting the very last photo to properly exit that loop when N < 0.
 				if err := dlAndMove(ctx); err != nil {
@@ -244,13 +261,31 @@ func main() {
 			log.Printf("body is ready")
 			return nil
 		}),
+		// For some reason, I need to do a pagedown before, for the end key to work...
+		chromedp.KeyEvent(kb.PageDown),
+		chromedp.Sleep(500*time.Millisecond),
 		chromedp.KeyEvent(kb.End),
-		chromedp.Sleep(10000*time.Millisecond),
-		/*
-			chromedp.ActionFunc(firstNav),
-			chromedp.ActionFunc(dlAndMove),
-			chromedp.ActionFunc(navRightN(*nItemsFlag-1)),
-		*/
+		chromedp.Sleep(5000*time.Millisecond),
+		// TODO(mpl): do it the smart(er) way: nav right in photo view until the URL does not change anymore. Or something.
+		chromedp.KeyEvent(kb.ArrowRight),
+		chromedp.KeyEvent(kb.ArrowRight),
+		chromedp.KeyEvent(kb.ArrowRight),
+		chromedp.KeyEvent(kb.ArrowRight),
+		chromedp.KeyEvent(kb.ArrowRight),
+		chromedp.KeyEvent(kb.ArrowRight),
+		chromedp.KeyEvent(kb.ArrowRight),
+		chromedp.KeyEvent(kb.ArrowRight),
+		chromedp.KeyEvent(kb.ArrowRight),
+		chromedp.KeyEvent(kb.ArrowRight),
+		chromedp.KeyEvent(kb.ArrowRight),
+		chromedp.KeyEvent(kb.ArrowRight),
+		chromedp.KeyEvent(kb.ArrowRight),
+		chromedp.KeyEvent(kb.ArrowRight),
+		chromedp.KeyEvent(kb.ArrowRight),
+		chromedp.KeyEvent(kb.ArrowRight),
+		chromedp.ActionFunc(firstNav),
+		chromedp.ActionFunc(dlAndMove),
+		chromedp.ActionFunc(navN("left", *nItemsFlag-1)),
 	); err != nil {
 		log.Fatal(err)
 	}
@@ -260,7 +295,7 @@ func main() {
 	// https://github.com/chromedp/chromedp/issues/400
 	// https://godoc.org/github.com/chromedp/chromedp/kb
 
-	_, _ = firstNav, navRightN
+	_ = firstNav
 
 }
 
