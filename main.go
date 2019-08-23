@@ -99,7 +99,16 @@ func main() {
 		return nil
 	}
 
-	download := func(ctx context.Context) (string, error) {
+	markDone := func(dldir, location string) error {
+		println("LOCATION: ", location)
+		// TODO(mpl): back up .lastdone before overwriting it, in case writing it fails.
+		if err := ioutil.WriteFile(filepath.Join(dldir, ".lastdone"), []byte(location), 0600); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	download := func(ctx context.Context, location string) (string, error) {
 		dir := s.dlDir
 		keyD, ok := kb.Keys['D']
 		if !ok {
@@ -128,6 +137,7 @@ func main() {
 			}
 		}
 
+		var filename string
 		started := false
 		endTimeout := time.Now().Add(30 * time.Second)
 		startTimeout := time.Now().Add(5 * time.Second)
@@ -166,9 +176,16 @@ func main() {
 			}
 			if !strings.HasSuffix(fileEntries[0], ".crdownload") {
 				// download is over
-				return fileEntries[0], nil
+				filename = fileEntries[0]
+				break
 			}
 		}
+
+		if err := markDone(dir, location); err != nil {
+			return "", err
+		}
+
+		return filename, nil
 	}
 
 	mvDl := func(dlFile string) func(ctx context.Context) error {
@@ -184,9 +201,9 @@ func main() {
 		}
 	}
 
-	dlAndMove := func(ctx context.Context) error {
+	dlAndMove := func(ctx context.Context, location string) error {
 		var err error
-		dlFile, err := download(ctx)
+		dlFile, err := download(ctx, location)
 		if err != nil {
 			return err
 		}
@@ -227,6 +244,11 @@ func main() {
 			if N == 0 {
 				return nil
 			}
+			var location string
+			lookingForLastDone := true
+			if s.lastDone == "" {
+				lookingForLastDone = false
+			}
 			for {
 				if N > 0 && n >= N {
 					break
@@ -240,8 +262,19 @@ func main() {
 						return err
 					}
 				}
+				if err := chromedp.Location(&location).Do(ctx); err != nil {
+					return err
+				}
+				if lookingForLastDone {
+					if location == s.lastDone {
+						lookingForLastDone = false
+					}
+					println(location, " ALREADY DONE")
+					continue
+				}
+
 				// TODO(mpl): deal with getting the very last photo to properly exit that loop when N < 0.
-				if err := dlAndMove(ctx); err != nil {
+				if err := dlAndMove(ctx, location); err != nil {
 					return err
 				}
 				n++
@@ -304,6 +337,18 @@ type Session struct {
 	parentCancel  context.CancelFunc
 	dlDir         string
 	profileDir    string
+	lastDone      string
+}
+
+func getLastDone(dlDir string) (string, error) {
+	data, err := ioutil.ReadFile(filepath.Join(dlDir, ".lastdone"))
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		return "", nil
+	}
+	return string(data), nil
 }
 
 func NewSession() (*Session, error) {
@@ -327,9 +372,14 @@ func NewSession() (*Session, error) {
 	if err := os.MkdirAll(dlDir, 0700); err != nil {
 		return nil, err
 	}
+	lastDone, err := getLastDone(dlDir)
+	if err != nil {
+		return nil, err
+	}
 	s := &Session{
 		profileDir: dir,
 		dlDir:      dlDir,
+		lastDone:   lastDone,
 	}
 	return s, nil
 }
