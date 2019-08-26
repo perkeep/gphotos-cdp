@@ -90,7 +90,7 @@ func main() {
 		up.Type = input.KeyUp
 
 		for _, ev := range []*input.DispatchKeyEventParams{&down, &up} {
-			log.Printf("Event: %+v", *ev)
+			//			log.Printf("Event: %+v", *ev)
 			if err := ev.Do(ctx); err != nil {
 				return err
 			}
@@ -108,7 +108,7 @@ func main() {
 		return nil
 	}
 
-	download := func(ctx context.Context, location string) (string, error) {
+	download := func(ctx context.Context, location string, doMarkDone bool) (string, error) {
 		dir := s.dlDir
 		keyD, ok := kb.Keys['D']
 		if !ok {
@@ -131,7 +131,7 @@ func main() {
 		up.Type = input.KeyUp
 
 		for _, ev := range []*input.DispatchKeyEventParams{&down, &up} {
-			log.Printf("Event: %+v", *ev)
+			//			log.Printf("Event: %+v", *ev)
 			if err := ev.Do(ctx); err != nil {
 				return "", err
 			}
@@ -160,6 +160,9 @@ func main() {
 				if v.IsDir() {
 					continue
 				}
+				if v.Name() == ".lastdone" {
+					continue
+				}
 				fileEntries = append(fileEntries, v.Name())
 			}
 			if len(fileEntries) < 1 {
@@ -179,6 +182,10 @@ func main() {
 				filename = fileEntries[0]
 				break
 			}
+		}
+
+		if !doMarkDone {
+			return filename, nil
 		}
 
 		if err := markDone(dir, location); err != nil {
@@ -201,18 +208,27 @@ func main() {
 		}
 	}
 
-	dlAndMove := func(ctx context.Context, location string) error {
+	dlAndMove := func(ctx context.Context, location string, doMarkDone bool) error {
 		var err error
-		dlFile, err := download(ctx, location)
+		dlFile, err := download(ctx, location, doMarkDone)
 		if err != nil {
 			return err
 		}
 		return mvDl(dlFile)(ctx)
 	}
 
+	dlAndMoveW := func() func(ctx context.Context) error {
+		return func(ctx context.Context) error {
+			var location string
+			if err := chromedp.Location(&location).Do(ctx); err != nil {
+				return err
+			}
+			return dlAndMove(ctx, location, false)
+		}
+	}
+
 	firstNav := func(ctx context.Context) error {
 		chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
-		log.Printf("sent key")
 		chromedp.Sleep(500 * time.Millisecond).Do(ctx)
 		chromedp.KeyEvent("\n").Do(ctx)
 		chromedp.Sleep(500 * time.Millisecond).Do(ctx)
@@ -221,15 +237,13 @@ func main() {
 
 	navRight := func(ctx context.Context) error {
 		chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
-		log.Printf("sent key")
 		chromedp.Sleep(5000 * time.Millisecond).Do(ctx)
 		chromedp.WaitReady("body", chromedp.ByQuery)
 		return nil
 	}
 
 	navLeft := func(ctx context.Context) error {
-		chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
-		log.Printf("sent key")
+		chromedp.KeyEvent(kb.ArrowLeft).Do(ctx)
 		chromedp.Sleep(5000 * time.Millisecond).Do(ctx)
 		chromedp.WaitReady("body", chromedp.ByQuery)
 		return nil
@@ -274,7 +288,7 @@ func main() {
 				}
 
 				// TODO(mpl): deal with getting the very last photo to properly exit that loop when N < 0.
-				if err := dlAndMove(ctx, location); err != nil {
+				if err := dlAndMove(ctx, location, true); err != nil {
 					return err
 				}
 				n++
@@ -317,7 +331,7 @@ func main() {
 		chromedp.KeyEvent(kb.ArrowRight),
 		chromedp.KeyEvent(kb.ArrowRight),
 		chromedp.ActionFunc(firstNav),
-		chromedp.ActionFunc(dlAndMove),
+		chromedp.ActionFunc(dlAndMoveW()),
 		chromedp.ActionFunc(navN("left", *nItemsFlag-1)),
 	); err != nil {
 		log.Fatal(err)
