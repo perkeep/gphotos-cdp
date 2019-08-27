@@ -108,6 +108,7 @@ func main() {
 		return nil
 	}
 
+	// TODO(mpl): remove doMarkDone
 	download := func(ctx context.Context, location string, doMarkDone bool) (string, error) {
 		dir := s.dlDir
 		keyD, ok := kb.Keys['D']
@@ -148,6 +149,7 @@ func main() {
 				return "", fmt.Errorf("timeout while downloading in %q", dir)
 			}
 
+			// TODO(mpl): this breaks for a large video/file?
 			if !started && time.Now().After(startTimeout) {
 				return "", fmt.Errorf("downloading in %q took too long to start", dir)
 			}
@@ -264,6 +266,22 @@ func main() {
 				lookingForLastDone = false
 			}
 			for {
+
+				if err := chromedp.Location(&location).Do(ctx); err != nil {
+					return err
+				}
+				if !lookingForLastDone {
+					// TODO(mpl): deal with getting the very last photo to properly exit that loop when N < 0.
+					if err := dlAndMove(ctx, location, true); err != nil {
+						return err
+					}
+					n++
+				} else {
+					println(location, " ALREADY DONE")
+					if location == s.lastDone {
+						lookingForLastDone = false
+					}
+				}
 				if N > 0 && n >= N {
 					break
 				}
@@ -276,22 +294,6 @@ func main() {
 						return err
 					}
 				}
-				if err := chromedp.Location(&location).Do(ctx); err != nil {
-					return err
-				}
-				if lookingForLastDone {
-					if location == s.lastDone {
-						lookingForLastDone = false
-					}
-					println(location, " ALREADY DONE")
-					continue
-				}
-
-				// TODO(mpl): deal with getting the very last photo to properly exit that loop when N < 0.
-				if err := dlAndMove(ctx, location, true); err != nil {
-					return err
-				}
-				n++
 			}
 			return nil
 		}
@@ -347,8 +349,8 @@ func main() {
 		chromedp.KeyEvent(kb.ArrowRight),
 		chromedp.Sleep(500*time.Millisecond),
 		chromedp.ActionFunc(firstNav),
-		chromedp.ActionFunc(dlAndMoveW()),
-		chromedp.ActionFunc(navN("left", *nItemsFlag-1)),
+		//		chromedp.ActionFunc(dlAndMoveW()),
+		chromedp.ActionFunc(navN("left", *nItemsFlag)),
 	); err != nil {
 		log.Fatal(err)
 	}
@@ -358,7 +360,7 @@ func main() {
 	// https://github.com/chromedp/chromedp/issues/400
 	// https://godoc.org/github.com/chromedp/chromedp/kb
 
-	_ = firstNav
+	_, _ = firstNav, dlAndMoveW
 
 }
 
