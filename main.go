@@ -237,8 +237,15 @@ func main() {
 	}
 
 	firstNav := func(ctx context.Context) error {
+		// TODO(mpl): do these two special cases even before jumping to the oldest.
 		if *startFlag != "" {
 			chromedp.Navigate(*startFlag).Do(ctx)
+			chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
+			chromedp.Sleep(5000 * time.Millisecond).Do(ctx)
+			return nil
+		}
+		if s.lastDone != "" {
+			chromedp.Navigate(s.lastDone).Do(ctx)
 			chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
 			chromedp.Sleep(5000 * time.Millisecond).Do(ctx)
 			return nil
@@ -274,27 +281,16 @@ func main() {
 				return nil
 			}
 			var location string
-			// TODO(mpl): navigate directly to lastdone.
-			lookingForLastDone := true
-			if s.lastDone == "" {
-				lookingForLastDone = false
-			}
 			for {
+				// TODO(mpl): move the Location call to within download() ?
 				if err := chromedp.Location(&location).Do(ctx); err != nil {
 					return err
 				}
-				if !lookingForLastDone {
-					// TODO(mpl): deal with getting the very last photo to properly exit that loop when N < 0.
-					if err := dlAndMove(ctx, location, true); err != nil {
-						return err
-					}
-					n++
-				} else {
-					println(location, " ALREADY DONE")
-					if location == s.lastDone {
-						lookingForLastDone = false
-					}
+				// TODO(mpl): deal with getting the very last photo to properly exit that loop when N < 0.
+				if err := dlAndMove(ctx, location, true); err != nil {
+					return err
 				}
+				n++
 				if N > 0 && n >= N {
 					break
 				}
