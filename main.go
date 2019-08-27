@@ -23,12 +23,16 @@ var (
 	nItemsFlag = flag.Int("n", -1, "number of items to download. If negative, get them all.")
 	devFlag    = flag.Bool("dev", false, "dev mode. we reuse the same session dir (/tmp/gphotos-cdp), so we don't have to auth at every run.")
 	dlDirFlag  = flag.String("dldir", "", "where to (temporarily) write the downloads. defaults to $HOME/Downloads/gphotos-cdp.")
+	startFlag  = flag.String("start", "", "skip all photos until this location is reached. for debugging.")
 )
 
 func main() {
 	flag.Parse()
 	if *nItemsFlag == 0 {
 		return
+	}
+	if !*devFlag && *startFlag != "" {
+		log.Fatal("-start only allowed in dev mode")
 	}
 	s, err := NewSession()
 	if err != nil {
@@ -140,16 +144,18 @@ func main() {
 
 		var filename string
 		started := false
-		endTimeout := time.Now().Add(30 * time.Second)
-		startTimeout := time.Now().Add(5 * time.Second)
+		// TODO(mpl): do not use just an endTimeout. instead, only start a countdown if/when size of download stops progressing. and reset it everytime dowload makes progress again.
+		var endTimeout time.Time
+		startTimeout := time.Now().Add(time.Minute)
 		tick := 500 * time.Millisecond
 		for {
 			time.Sleep(tick)
-			if time.Now().After(endTimeout) {
+			if started && time.Now().After(endTimeout) {
 				return "", fmt.Errorf("timeout while downloading in %q", dir)
 			}
 
-			// TODO(mpl): this breaks for a large video/file?
+			// TODO(mpl): download starts late if it's a video. figure out if dl can only
+			// start after video has started playing or something like that?
 			if !started && time.Now().After(startTimeout) {
 				return "", fmt.Errorf("downloading in %q took too long to start", dir)
 			}
@@ -173,6 +179,7 @@ func main() {
 			if !started {
 				if len(fileEntries) > 0 {
 					started = true
+					endTimeout = time.Now().Add(time.Minute)
 				}
 				continue
 			}
@@ -230,6 +237,12 @@ func main() {
 	}
 
 	firstNav := func(ctx context.Context) error {
+		if *startFlag != "" {
+			chromedp.Navigate(*startFlag).Do(ctx)
+			chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
+			chromedp.Sleep(5000 * time.Millisecond).Do(ctx)
+			return nil
+		}
 		chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
 		chromedp.Sleep(500 * time.Millisecond).Do(ctx)
 		chromedp.KeyEvent("\n").Do(ctx)
@@ -239,15 +252,15 @@ func main() {
 
 	navRight := func(ctx context.Context) error {
 		chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
-		chromedp.Sleep(5000 * time.Millisecond).Do(ctx)
 		chromedp.WaitReady("body", chromedp.ByQuery)
+		chromedp.Sleep(1 * time.Second).Do(ctx)
 		return nil
 	}
 
 	navLeft := func(ctx context.Context) error {
 		chromedp.KeyEvent(kb.ArrowLeft).Do(ctx)
-		chromedp.Sleep(5000 * time.Millisecond).Do(ctx)
 		chromedp.WaitReady("body", chromedp.ByQuery)
+		chromedp.Sleep(1 * time.Second).Do(ctx)
 		return nil
 	}
 
@@ -261,12 +274,12 @@ func main() {
 				return nil
 			}
 			var location string
+			// TODO(mpl): navigate directly to lastdone.
 			lookingForLastDone := true
 			if s.lastDone == "" {
 				lookingForLastDone = false
 			}
 			for {
-
 				if err := chromedp.Location(&location).Do(ctx); err != nil {
 					return err
 				}
