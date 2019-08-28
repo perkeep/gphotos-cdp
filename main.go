@@ -144,26 +144,25 @@ func main() {
 
 		var filename string
 		started := false
-		// TODO(mpl): do not use just an endTimeout. instead, only start a countdown if/when size of download stops progressing. and reset it everytime dowload makes progress again.
-		var endTimeout time.Time
-		startTimeout := time.Now().Add(time.Minute)
 		tick := 500 * time.Millisecond
+		var fileSize int64
+		timeout := time.Now().Add(time.Minute)
 		for {
 			time.Sleep(tick)
-			if started && time.Now().After(endTimeout) {
+			// TODO(mpl): download starts late if it's a video. figure out if dl can only
+			// start after video has started playing or something like that?
+			if !started && time.Now().After(timeout) {
+				return "", fmt.Errorf("downloading in %q took too long to start", dir)
+			}
+			if started && time.Now().After(timeout) {
 				return "", fmt.Errorf("timeout while downloading in %q", dir)
 			}
 
-			// TODO(mpl): download starts late if it's a video. figure out if dl can only
-			// start after video has started playing or something like that?
-			if !started && time.Now().After(startTimeout) {
-				return "", fmt.Errorf("downloading in %q took too long to start", dir)
-			}
 			entries, err := ioutil.ReadDir(dir)
 			if err != nil {
 				return "", err
 			}
-			var fileEntries []string
+			var fileEntries []os.FileInfo
 			for _, v := range entries {
 				if v.IsDir() {
 					continue
@@ -171,24 +170,29 @@ func main() {
 				if v.Name() == ".lastdone" {
 					continue
 				}
-				fileEntries = append(fileEntries, v.Name())
+				fileEntries = append(fileEntries, v)
 			}
 			if len(fileEntries) < 1 {
-				continue
-			}
-			if !started {
-				if len(fileEntries) > 0 {
-					started = true
-					endTimeout = time.Now().Add(time.Minute)
-				}
 				continue
 			}
 			if len(fileEntries) > 1 {
 				return "", fmt.Errorf("more than one file (%d) in download dir %q", len(fileEntries), dir)
 			}
-			if !strings.HasSuffix(fileEntries[0], ".crdownload") {
+			if !started {
+				if len(fileEntries) > 0 {
+					started = true
+					timeout = time.Now().Add(time.Minute)
+				}
+			}
+			newFileSize := fileEntries[0].Size()
+			if newFileSize > fileSize {
+				// push back the timeout as long as we make progress
+				timeout = time.Now().Add(time.Minute)
+				fileSize = newFileSize
+			}
+			if !strings.HasSuffix(fileEntries[0].Name(), ".crdownload") {
 				// download is over
-				filename = fileEntries[0]
+				filename = fileEntries[0].Name()
 				break
 			}
 		}
