@@ -241,7 +241,6 @@ func main() {
 	}
 
 	firstNav := func(ctx context.Context) error {
-		// TODO(mpl): do these two special cases even before jumping to the oldest.
 		if *startFlag != "" {
 			chromedp.Navigate(*startFlag).Do(ctx)
 			chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
@@ -254,8 +253,16 @@ func main() {
 			chromedp.Sleep(5000 * time.Millisecond).Do(ctx)
 			return nil
 		}
-		chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
+		// For some reason, I need to do a pagedown before, for the end key to work...
+		chromedp.KeyEvent(kb.PageDown).Do(ctx)
 		chromedp.Sleep(500 * time.Millisecond).Do(ctx)
+		chromedp.KeyEvent(kb.End).Do(ctx)
+		chromedp.Sleep(5000 * time.Millisecond).Do(ctx)
+		// TODO(mpl): do it the smart(er) way: nav right in photo view until the URL does not change anymore. Or something.
+		for i := 0; i < 15; i++ {
+			chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
+			chromedp.Sleep(500 * time.Millisecond).Do(ctx)
+		}
 		chromedp.KeyEvent("\n").Do(ctx)
 		chromedp.Sleep(500 * time.Millisecond).Do(ctx)
 		return nil
@@ -323,46 +330,7 @@ func main() {
 			log.Printf("body is ready")
 			return nil
 		}),
-		// For some reason, I need to do a pagedown before, for the end key to work...
-		chromedp.KeyEvent(kb.PageDown),
-		chromedp.Sleep(500*time.Millisecond),
-		chromedp.KeyEvent(kb.End),
-		chromedp.Sleep(5000*time.Millisecond),
-		// TODO(mpl): do it the smart(er) way: nav right in photo view until the URL does not change anymore. Or something.
-		chromedp.KeyEvent(kb.ArrowRight),
-		chromedp.Sleep(500*time.Millisecond),
-		chromedp.KeyEvent(kb.ArrowRight),
-		chromedp.Sleep(500*time.Millisecond),
-		chromedp.KeyEvent(kb.ArrowRight),
-		chromedp.Sleep(500*time.Millisecond),
-		chromedp.KeyEvent(kb.ArrowRight),
-		chromedp.Sleep(500*time.Millisecond),
-		chromedp.KeyEvent(kb.ArrowRight),
-		chromedp.Sleep(500*time.Millisecond),
-		chromedp.KeyEvent(kb.ArrowRight),
-		chromedp.Sleep(500*time.Millisecond),
-		chromedp.KeyEvent(kb.ArrowRight),
-		chromedp.Sleep(500*time.Millisecond),
-		chromedp.KeyEvent(kb.ArrowRight),
-		chromedp.Sleep(500*time.Millisecond),
-		chromedp.KeyEvent(kb.ArrowRight),
-		chromedp.Sleep(500*time.Millisecond),
-		chromedp.KeyEvent(kb.ArrowRight),
-		chromedp.Sleep(500*time.Millisecond),
-		chromedp.KeyEvent(kb.ArrowRight),
-		chromedp.Sleep(500*time.Millisecond),
-		chromedp.KeyEvent(kb.ArrowRight),
-		chromedp.Sleep(500*time.Millisecond),
-		chromedp.KeyEvent(kb.ArrowRight),
-		chromedp.Sleep(500*time.Millisecond),
-		chromedp.KeyEvent(kb.ArrowRight),
-		chromedp.Sleep(500*time.Millisecond),
-		chromedp.KeyEvent(kb.ArrowRight),
-		chromedp.Sleep(500*time.Millisecond),
-		chromedp.KeyEvent(kb.ArrowRight),
-		chromedp.Sleep(500*time.Millisecond),
 		chromedp.ActionFunc(firstNav),
-		//		chromedp.ActionFunc(dlAndMoveW()),
 		chromedp.ActionFunc(navN("left", *nItemsFlag)),
 	); err != nil {
 		log.Fatal(err)
