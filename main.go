@@ -75,36 +75,6 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// TODO(mpl): can we make it work with SendKeys?
-	navEnd := func(ctx context.Context) error {
-		keyEnd, ok := kb.Keys['\u0305']
-		if !ok {
-			return errors.New("no End key")
-		}
-
-		down := input.DispatchKeyEventParams{
-			Key:  keyEnd.Key,
-			Code: keyEnd.Code,
-			// Some github issue says to remove NativeVirtualKeyCode, but it does not change anything.
-			NativeVirtualKeyCode:  keyEnd.Native,
-			WindowsVirtualKeyCode: keyEnd.Windows,
-			Type:                  input.KeyDown,
-		}
-		if runtime.GOOS == "darwin" {
-			down.NativeVirtualKeyCode = 0
-		}
-		up := down
-		up.Type = input.KeyUp
-
-		for _, ev := range []*input.DispatchKeyEventParams{&down, &up} {
-			if err := ev.Do(ctx); err != nil {
-				return err
-			}
-		}
-		time.Sleep(5 * time.Second)
-		return nil
-	}
-
 	firstNav := func(ctx context.Context) error {
 		if *startFlag != "" {
 			chromedp.Navigate(*startFlag).Do(ctx)
@@ -323,7 +293,6 @@ func main() {
 	}
 
 	if err := chromedp.Run(ctx,
-		chromedp.ActionFunc(navEnd),
 		page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(s.dlDir),
 		chromedp.Navigate("https://photos.google.com/"),
 		chromedp.Sleep(5000*time.Millisecond),
