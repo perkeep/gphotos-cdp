@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -24,6 +25,7 @@ var (
 	devFlag    = flag.Bool("dev", false, "dev mode. we reuse the same session dir (/tmp/gphotos-cdp), so we don't have to auth at every run.")
 	dlDirFlag  = flag.String("dldir", "", "where to (temporarily) write the downloads. defaults to $HOME/Downloads/gphotos-cdp.")
 	startFlag  = flag.String("start", "", "skip all photos until this location is reached. for debugging.")
+	runFlag    = flag.String("run", "", "the program to run on each downloaded item, right after it is dowloaded. It is also the responsibility of that program to remove the downloaded item, if desired.")
 )
 
 func main() {
@@ -73,6 +75,7 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// TODO(mpl): can we make it work with SendKeys?
 	navEnd := func(ctx context.Context) error {
 		keyEnd, ok := kb.Keys['\u0305']
 		if !ok {
@@ -94,12 +97,39 @@ func main() {
 		up.Type = input.KeyUp
 
 		for _, ev := range []*input.DispatchKeyEventParams{&down, &up} {
-			//			log.Printf("Event: %+v", *ev)
 			if err := ev.Do(ctx); err != nil {
 				return err
 			}
 		}
 		time.Sleep(5 * time.Second)
+		return nil
+	}
+
+	firstNav := func(ctx context.Context) error {
+		if *startFlag != "" {
+			chromedp.Navigate(*startFlag).Do(ctx)
+			chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
+			chromedp.Sleep(5000 * time.Millisecond).Do(ctx)
+			return nil
+		}
+		if s.lastDone != "" {
+			chromedp.Navigate(s.lastDone).Do(ctx)
+			chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
+			chromedp.Sleep(5000 * time.Millisecond).Do(ctx)
+			return nil
+		}
+		// For some reason, I need to do a pagedown before, for the end key to work...
+		chromedp.KeyEvent(kb.PageDown).Do(ctx)
+		chromedp.Sleep(500 * time.Millisecond).Do(ctx)
+		chromedp.KeyEvent(kb.End).Do(ctx)
+		chromedp.Sleep(5000 * time.Millisecond).Do(ctx)
+		// TODO(mpl): do it the smart(er) way: nav right in photo view until the URL does not change anymore. Or something.
+		for i := 0; i < 15; i++ {
+			chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
+			chromedp.Sleep(500 * time.Millisecond).Do(ctx)
+		}
+		chromedp.KeyEvent("\n").Do(ctx)
+		chromedp.Sleep(500 * time.Millisecond).Do(ctx)
 		return nil
 	}
 
@@ -112,8 +142,7 @@ func main() {
 		return nil
 	}
 
-	// TODO(mpl): remove doMarkDone
-	download := func(ctx context.Context, location string, doMarkDone bool) (string, error) {
+	download := func(ctx context.Context, location string) (string, error) {
 		dir := s.dlDir
 		keyD, ok := kb.Keys['D']
 		if !ok {
@@ -197,10 +226,6 @@ func main() {
 			}
 		}
 
-		if !doMarkDone {
-			return filename, nil
-		}
-
 		if err := markDone(dir, location); err != nil {
 			return "", err
 		}
@@ -208,64 +233,38 @@ func main() {
 		return filename, nil
 	}
 
-	mvDl := func(dlFile string) func(ctx context.Context) error {
-		return func(ctx context.Context) error {
-			dir, err := ioutil.TempDir(s.dlDir, "")
-			if err != nil {
-				return err
+	mvDl := func(dlFile, location string) func(ctx context.Context) (string, error) {
+		return func(ctx context.Context) (string, error) {
+			parts := strings.Split(location, "/")
+			if len(parts) < 5 {
+				return "", fmt.Errorf("not enough slash separated parts in location %v: %d", location, len(parts))
 			}
-			if err := os.Rename(filepath.Join(s.dlDir, dlFile), filepath.Join(dir, dlFile)); err != nil {
-				return err
+			newDir := filepath.Join(s.dlDir, parts[4])
+			if err := os.MkdirAll(newDir, 0700); err != nil {
+				return "", err
 			}
-			return nil
+			newFile := filepath.Join(newDir, dlFile)
+			if err := os.Rename(filepath.Join(s.dlDir, dlFile), newFile); err != nil {
+				return "", err
+			}
+			return newFile, nil
 		}
 	}
 
-	dlAndMove := func(ctx context.Context, location string, doMarkDone bool) error {
+	dlAndMove := func(ctx context.Context, location string) (string, error) {
 		var err error
-		dlFile, err := download(ctx, location, doMarkDone)
+		dlFile, err := download(ctx, location)
 		if err != nil {
-			return err
+			return "", err
 		}
-		return mvDl(dlFile)(ctx)
+		return mvDl(dlFile, location)(ctx)
 	}
 
-	dlAndMoveW := func() func(ctx context.Context) error {
-		return func(ctx context.Context) error {
-			var location string
-			if err := chromedp.Location(&location).Do(ctx); err != nil {
-				return err
-			}
-			return dlAndMove(ctx, location, false)
-		}
-	}
-
-	firstNav := func(ctx context.Context) error {
-		if *startFlag != "" {
-			chromedp.Navigate(*startFlag).Do(ctx)
-			chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
-			chromedp.Sleep(5000 * time.Millisecond).Do(ctx)
+	doRun := func(ctx context.Context, filePath string) error {
+		if *runFlag == "" {
 			return nil
 		}
-		if s.lastDone != "" {
-			chromedp.Navigate(s.lastDone).Do(ctx)
-			chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
-			chromedp.Sleep(5000 * time.Millisecond).Do(ctx)
-			return nil
-		}
-		// For some reason, I need to do a pagedown before, for the end key to work...
-		chromedp.KeyEvent(kb.PageDown).Do(ctx)
-		chromedp.Sleep(500 * time.Millisecond).Do(ctx)
-		chromedp.KeyEvent(kb.End).Do(ctx)
-		chromedp.Sleep(5000 * time.Millisecond).Do(ctx)
-		// TODO(mpl): do it the smart(er) way: nav right in photo view until the URL does not change anymore. Or something.
-		for i := 0; i < 15; i++ {
-			chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
-			chromedp.Sleep(500 * time.Millisecond).Do(ctx)
-		}
-		chromedp.KeyEvent("\n").Do(ctx)
-		chromedp.Sleep(500 * time.Millisecond).Do(ctx)
-		return nil
+		return exec.Command(*runFlag, filePath).Run()
 	}
 
 	navRight := func(ctx context.Context) error {
@@ -293,12 +292,16 @@ func main() {
 			}
 			var location string
 			for {
-				// TODO(mpl): move the Location call to within download() ?
 				if err := chromedp.Location(&location).Do(ctx); err != nil {
 					return err
 				}
 				// TODO(mpl): deal with getting the very last photo to properly exit that loop when N < 0.
-				if err := dlAndMove(ctx, location, true); err != nil {
+				filePath, err := dlAndMove(ctx, location)
+				if err != nil {
+					return err
+				}
+				// TODO(mpl): do run in a go routine?
+				if err := doRun(ctx, filePath); err != nil {
 					return err
 				}
 				n++
@@ -322,7 +325,6 @@ func main() {
 	if err := chromedp.Run(ctx,
 		chromedp.ActionFunc(navEnd),
 		page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(s.dlDir),
-		// TODO(mpl): add policy func over photo URL, which decides what we do with the downloaded file. default policy is storing it on disk.
 		chromedp.Navigate("https://photos.google.com/"),
 		chromedp.Sleep(5000*time.Millisecond),
 		chromedp.WaitReady("body", chromedp.ByQuery),
@@ -336,13 +338,6 @@ func main() {
 		log.Fatal(err)
 	}
 	fmt.Println("OK")
-
-	// Next: keys
-	// https://github.com/chromedp/chromedp/issues/400
-	// https://godoc.org/github.com/chromedp/chromedp/kb
-
-	_, _ = firstNav, dlAndMoveW
-
 }
 
 type Session struct {
