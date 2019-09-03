@@ -60,8 +60,15 @@ func main() {
 			return nil
 		}),
 		chromedp.Navigate("https://photos.google.com/"),
-		// chromedp.Sleep(30000*time.Millisecond),
-		chromedp.Sleep(5000*time.Millisecond),
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			if *devFlag {
+				//				chromedp.Sleep(5*time.Second).Do(ctx)
+				chromedp.Sleep(15 * time.Second).Do(ctx)
+			} else {
+				chromedp.Sleep(30 * time.Second).Do(ctx)
+			}
+			return nil
+		}),
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			log.Printf("post-navigate")
 			return nil
@@ -93,13 +100,26 @@ func main() {
 		chromedp.Sleep(500 * time.Millisecond).Do(ctx)
 		chromedp.KeyEvent(kb.End).Do(ctx)
 		chromedp.Sleep(5000 * time.Millisecond).Do(ctx)
-		// TODO(mpl): do it the smart(er) way: nav right in photo view until the URL does not change anymore. Or something.
-		for i := 0; i < 15; i++ {
-			chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
-			chromedp.Sleep(500 * time.Millisecond).Do(ctx)
-		}
-		chromedp.KeyEvent("\n").Do(ctx)
+		chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
 		chromedp.Sleep(500 * time.Millisecond).Do(ctx)
+		chromedp.KeyEvent("\n").Do(ctx)
+		chromedp.Sleep(time.Second).Do(ctx)
+		var location, prevLocation string
+		if err := chromedp.Location(&prevLocation).Do(ctx); err != nil {
+			return err
+		}
+		for {
+			chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
+			chromedp.Sleep(time.Second).Do(ctx)
+			if err := chromedp.Location(&location).Do(ctx); err != nil {
+				return err
+			}
+			println(location, " VS ", prevLocation)
+			if location == prevLocation {
+				break
+			}
+			prevLocation = location
+		}
 		return nil
 	}
 
