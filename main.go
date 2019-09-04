@@ -28,6 +28,9 @@ var (
 	runFlag    = flag.String("run", "", "the program to run on each downloaded item, right after it is dowloaded. It is also the responsibility of that program to remove the downloaded item, if desired.")
 )
 
+// TODO(mpl): in general everywhere, do not rely so much on sleeps. We need
+// better ways to wait for things to be loaded/ready.
+
 func main() {
 	flag.Parse()
 	if *nItemsFlag == 0 {
@@ -114,7 +117,6 @@ func main() {
 			if err := chromedp.Location(&location).Do(ctx); err != nil {
 				return err
 			}
-			println(location, " VS ", prevLocation)
 			if location == prevLocation {
 				break
 			}
@@ -280,12 +282,16 @@ func main() {
 			if N == 0 {
 				return nil
 			}
-			var location string
+			var location, prevLocation string
+
 			for {
 				if err := chromedp.Location(&location).Do(ctx); err != nil {
 					return err
 				}
-				// TODO(mpl): deal with getting the very last photo to properly exit that loop when N < 0.
+				if location == prevLocation {
+					break
+				}
+				prevLocation = location
 				filePath, err := dlAndMove(ctx, location)
 				if err != nil {
 					return err
