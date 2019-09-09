@@ -21,11 +21,12 @@ import (
 )
 
 var (
-	nItemsFlag = flag.Int("n", -1, "number of items to download. If negative, get them all.")
-	devFlag    = flag.Bool("dev", false, "dev mode. we reuse the same session dir (/tmp/gphotos-cdp), so we don't have to auth at every run.")
-	dlDirFlag  = flag.String("dldir", "", "where to (temporarily) write the downloads. defaults to $HOME/Downloads/gphotos-cdp.")
-	startFlag  = flag.String("start", "", "skip all photos until this location is reached. for debugging.")
-	runFlag    = flag.String("run", "", "the program to run on each downloaded item, right after it is dowloaded. It is also the responsibility of that program to remove the downloaded item, if desired.")
+	nItemsFlag  = flag.Int("n", -1, "number of items to download. If negative, get them all.")
+	devFlag     = flag.Bool("dev", false, "dev mode. we reuse the same session dir (/tmp/gphotos-cdp), so we don't have to auth at every run.")
+	dlDirFlag   = flag.String("dldir", "", "where to (temporarily) write the downloads. defaults to $HOME/Downloads/gphotos-cdp.")
+	startFlag   = flag.String("start", "", "skip all photos until this location is reached. for debugging.")
+	runFlag     = flag.String("run", "", "the program to run on each downloaded item, right after it is dowloaded. It is also the responsibility of that program to remove the downloaded item, if desired.")
+	verboseFlag = flag.Bool("v", false, "be verbose")
 )
 
 // TODO(mpl): in general everywhere, do not rely so much on sleeps. We need
@@ -54,268 +55,8 @@ func main() {
 	ctx, cancel := s.NewContext()
 	defer cancel()
 
-	var outerBefore string
-
-	// login phase
-	if err := chromedp.Run(ctx,
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			log.Printf("pre-navigate")
-			return nil
-		}),
-		chromedp.Navigate("https://photos.google.com/"),
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			if *devFlag {
-				//				chromedp.Sleep(5*time.Second).Do(ctx)
-				chromedp.Sleep(15 * time.Second).Do(ctx)
-			} else {
-				chromedp.Sleep(30 * time.Second).Do(ctx)
-			}
-			return nil
-		}),
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			log.Printf("post-navigate")
-			return nil
-		}),
-		chromedp.OuterHTML("html>body", &outerBefore),
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			log.Printf("Source is %d bytes", len(outerBefore))
-			return nil
-		}),
-	); err != nil {
+	if err := login(ctx); err != nil {
 		log.Fatal(err)
-	}
-
-	firstNav := func(ctx context.Context) error {
-		if *startFlag != "" {
-			chromedp.Navigate(*startFlag).Do(ctx)
-			chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
-			chromedp.Sleep(5000 * time.Millisecond).Do(ctx)
-			return nil
-		}
-		if s.lastDone != "" {
-			chromedp.Navigate(s.lastDone).Do(ctx)
-			chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
-			chromedp.Sleep(5000 * time.Millisecond).Do(ctx)
-			return nil
-		}
-		// For some reason, I need to do a pagedown before, for the end key to work...
-		chromedp.KeyEvent(kb.PageDown).Do(ctx)
-		chromedp.Sleep(500 * time.Millisecond).Do(ctx)
-		chromedp.KeyEvent(kb.End).Do(ctx)
-		chromedp.Sleep(5000 * time.Millisecond).Do(ctx)
-		chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
-		chromedp.Sleep(500 * time.Millisecond).Do(ctx)
-		chromedp.KeyEvent("\n").Do(ctx)
-		chromedp.Sleep(time.Second).Do(ctx)
-		var location, prevLocation string
-		if err := chromedp.Location(&prevLocation).Do(ctx); err != nil {
-			return err
-		}
-		for {
-			chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
-			chromedp.Sleep(time.Second).Do(ctx)
-			if err := chromedp.Location(&location).Do(ctx); err != nil {
-				return err
-			}
-			if location == prevLocation {
-				break
-			}
-			prevLocation = location
-		}
-		return nil
-	}
-
-	markDone := func(dldir, location string) error {
-		println("LOCATION: ", location)
-		// TODO(mpl): back up .lastdone before overwriting it, in case writing it fails.
-		if err := ioutil.WriteFile(filepath.Join(dldir, ".lastdone"), []byte(location), 0600); err != nil {
-			return err
-		}
-		return nil
-	}
-
-	download := func(ctx context.Context, location string) (string, error) {
-		dir := s.dlDir
-		keyD, ok := kb.Keys['D']
-		if !ok {
-			log.Fatal("NO D KEY")
-		}
-
-		down := input.DispatchKeyEventParams{
-			Key:  keyD.Key,
-			Code: keyD.Code,
-			// Some github issue says to remove NativeVirtualKeyCode, but it does not change anything.
-			NativeVirtualKeyCode:  keyD.Native,
-			WindowsVirtualKeyCode: keyD.Windows,
-			Type:                  input.KeyDown,
-			Modifiers:             input.ModifierShift,
-		}
-		if runtime.GOOS == "darwin" {
-			down.NativeVirtualKeyCode = 0
-		}
-		up := down
-		up.Type = input.KeyUp
-
-		for _, ev := range []*input.DispatchKeyEventParams{&down, &up} {
-			//			log.Printf("Event: %+v", *ev)
-			if err := ev.Do(ctx); err != nil {
-				return "", err
-			}
-		}
-
-		var filename string
-		started := false
-		tick := 500 * time.Millisecond
-		var fileSize int64
-		timeout := time.Now().Add(time.Minute)
-		for {
-			time.Sleep(tick)
-			// TODO(mpl): download starts late if it's a video. figure out if dl can only
-			// start after video has started playing or something like that?
-			if !started && time.Now().After(timeout) {
-				return "", fmt.Errorf("downloading in %q took too long to start", dir)
-			}
-			if started && time.Now().After(timeout) {
-				return "", fmt.Errorf("timeout while downloading in %q", dir)
-			}
-
-			entries, err := ioutil.ReadDir(dir)
-			if err != nil {
-				return "", err
-			}
-			var fileEntries []os.FileInfo
-			for _, v := range entries {
-				if v.IsDir() {
-					continue
-				}
-				if v.Name() == ".lastdone" {
-					continue
-				}
-				fileEntries = append(fileEntries, v)
-			}
-			if len(fileEntries) < 1 {
-				continue
-			}
-			if len(fileEntries) > 1 {
-				return "", fmt.Errorf("more than one file (%d) in download dir %q", len(fileEntries), dir)
-			}
-			if !started {
-				if len(fileEntries) > 0 {
-					started = true
-					timeout = time.Now().Add(time.Minute)
-				}
-			}
-			newFileSize := fileEntries[0].Size()
-			if newFileSize > fileSize {
-				// push back the timeout as long as we make progress
-				timeout = time.Now().Add(time.Minute)
-				fileSize = newFileSize
-			}
-			if !strings.HasSuffix(fileEntries[0].Name(), ".crdownload") {
-				// download is over
-				filename = fileEntries[0].Name()
-				break
-			}
-		}
-
-		if err := markDone(dir, location); err != nil {
-			return "", err
-		}
-
-		return filename, nil
-	}
-
-	mvDl := func(dlFile, location string) func(ctx context.Context) (string, error) {
-		return func(ctx context.Context) (string, error) {
-			parts := strings.Split(location, "/")
-			if len(parts) < 5 {
-				return "", fmt.Errorf("not enough slash separated parts in location %v: %d", location, len(parts))
-			}
-			newDir := filepath.Join(s.dlDir, parts[4])
-			if err := os.MkdirAll(newDir, 0700); err != nil {
-				return "", err
-			}
-			newFile := filepath.Join(newDir, dlFile)
-			if err := os.Rename(filepath.Join(s.dlDir, dlFile), newFile); err != nil {
-				return "", err
-			}
-			return newFile, nil
-		}
-	}
-
-	dlAndMove := func(ctx context.Context, location string) (string, error) {
-		var err error
-		dlFile, err := download(ctx, location)
-		if err != nil {
-			return "", err
-		}
-		return mvDl(dlFile, location)(ctx)
-	}
-
-	doRun := func(ctx context.Context, filePath string) error {
-		if *runFlag == "" {
-			return nil
-		}
-		return exec.Command(*runFlag, filePath).Run()
-	}
-
-	navRight := func(ctx context.Context) error {
-		chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
-		chromedp.WaitReady("body", chromedp.ByQuery)
-		chromedp.Sleep(1 * time.Second).Do(ctx)
-		return nil
-	}
-
-	navLeft := func(ctx context.Context) error {
-		chromedp.KeyEvent(kb.ArrowLeft).Do(ctx)
-		chromedp.WaitReady("body", chromedp.ByQuery)
-		chromedp.Sleep(1 * time.Second).Do(ctx)
-		return nil
-	}
-
-	navN := func(direction string, N int) func(context.Context) error {
-		n := 0
-		return func(ctx context.Context) error {
-			if direction != "left" && direction != "right" {
-				return errors.New("wrong direction, pun intended")
-			}
-			if N == 0 {
-				return nil
-			}
-			var location, prevLocation string
-
-			for {
-				if err := chromedp.Location(&location).Do(ctx); err != nil {
-					return err
-				}
-				if location == prevLocation {
-					break
-				}
-				prevLocation = location
-				filePath, err := dlAndMove(ctx, location)
-				if err != nil {
-					return err
-				}
-				// TODO(mpl): do run in a go routine?
-				if err := doRun(ctx, filePath); err != nil {
-					return err
-				}
-				n++
-				if N > 0 && n >= N {
-					break
-				}
-				if direction == "right" {
-					if err := navRight(ctx); err != nil {
-						return err
-					}
-				} else {
-					if err := navLeft(ctx); err != nil {
-						return err
-					}
-				}
-			}
-			return nil
-		}
 	}
 
 	if err := chromedp.Run(ctx,
@@ -324,11 +65,13 @@ func main() {
 		chromedp.Sleep(5000*time.Millisecond),
 		chromedp.WaitReady("body", chromedp.ByQuery),
 		chromedp.ActionFunc(func(ctx context.Context) error {
-			log.Printf("body is ready")
+			if *verboseFlag {
+				log.Printf("body is ready")
+			}
 			return nil
 		}),
-		chromedp.ActionFunc(firstNav),
-		chromedp.ActionFunc(navN("left", *nItemsFlag)),
+		chromedp.ActionFunc(s.firstNav),
+		chromedp.ActionFunc(s.navN(*nItemsFlag)),
 	); err != nil {
 		log.Fatal(err)
 	}
@@ -443,4 +186,263 @@ func (s *Session) cleanDlDir() error {
 		}
 	}
 	return nil
+}
+
+func login(ctx context.Context) error {
+	var outerBefore string
+	return chromedp.Run(ctx,
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			if *verboseFlag {
+				log.Printf("pre-navigate")
+			}
+			return nil
+		}),
+		chromedp.Navigate("https://photos.google.com/"),
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			if *devFlag {
+				//				chromedp.Sleep(5*time.Second).Do(ctx)
+				chromedp.Sleep(15 * time.Second).Do(ctx)
+			} else {
+				chromedp.Sleep(30 * time.Second).Do(ctx)
+			}
+			return nil
+		}),
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			if *verboseFlag {
+				log.Printf("post-navigate")
+			}
+			return nil
+		}),
+		chromedp.OuterHTML("html>body", &outerBefore),
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			if *verboseFlag {
+				log.Printf("Source is %d bytes", len(outerBefore))
+			}
+			return nil
+		}),
+	)
+}
+
+func (s Session) firstNav(ctx context.Context) error {
+	if *startFlag != "" {
+		chromedp.Navigate(*startFlag).Do(ctx)
+		chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
+		chromedp.Sleep(5000 * time.Millisecond).Do(ctx)
+		return nil
+	}
+	if s.lastDone != "" {
+		chromedp.Navigate(s.lastDone).Do(ctx)
+		chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
+		chromedp.Sleep(5000 * time.Millisecond).Do(ctx)
+		return nil
+	}
+	// For some reason, I need to do a pagedown before, for the end key to work...
+	chromedp.KeyEvent(kb.PageDown).Do(ctx)
+	chromedp.Sleep(500 * time.Millisecond).Do(ctx)
+	chromedp.KeyEvent(kb.End).Do(ctx)
+	chromedp.Sleep(5000 * time.Millisecond).Do(ctx)
+	chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
+	chromedp.Sleep(500 * time.Millisecond).Do(ctx)
+	chromedp.KeyEvent("\n").Do(ctx)
+	chromedp.Sleep(time.Second).Do(ctx)
+	var location, prevLocation string
+	if err := chromedp.Location(&prevLocation).Do(ctx); err != nil {
+		return err
+	}
+	for {
+		chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
+		chromedp.Sleep(time.Second).Do(ctx)
+		if err := chromedp.Location(&location).Do(ctx); err != nil {
+			return err
+		}
+		if location == prevLocation {
+			break
+		}
+		prevLocation = location
+	}
+	return nil
+}
+
+func doRun(filePath string) error {
+	if *runFlag == "" {
+		return nil
+	}
+	return exec.Command(*runFlag, filePath).Run()
+}
+
+func navLeft(ctx context.Context) error {
+	chromedp.KeyEvent(kb.ArrowLeft).Do(ctx)
+	chromedp.WaitReady("body", chromedp.ByQuery)
+	chromedp.Sleep(1 * time.Second).Do(ctx)
+	return nil
+}
+
+func markDone(dldir, location string) error {
+	if *verboseFlag {
+		log.Printf("Marking %v as done", location)
+	}
+	// TODO(mpl): back up .lastdone before overwriting it, in case writing it fails.
+	if err := ioutil.WriteFile(filepath.Join(dldir, ".lastdone"), []byte(location), 0600); err != nil {
+		return err
+	}
+	return nil
+}
+
+func startDownload(ctx context.Context) error {
+	keyD, ok := kb.Keys['D']
+	if !ok {
+		return errors.New("no D key")
+	}
+
+	down := input.DispatchKeyEventParams{
+		Key:                   keyD.Key,
+		Code:                  keyD.Code,
+		NativeVirtualKeyCode:  keyD.Native,
+		WindowsVirtualKeyCode: keyD.Windows,
+		Type:                  input.KeyDown,
+		Modifiers:             input.ModifierShift,
+	}
+	if runtime.GOOS == "darwin" {
+		down.NativeVirtualKeyCode = 0
+	}
+	up := down
+	up.Type = input.KeyUp
+
+	for _, ev := range []*input.DispatchKeyEventParams{&down, &up} {
+		if *verboseFlag {
+			log.Printf("Event: %+v", *ev)
+		}
+		if err := ev.Do(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s Session) download(ctx context.Context, location string) (string, error) {
+
+	if err := startDownload(ctx); err != nil {
+		return "", err
+	}
+
+	var filename string
+	started := false
+	tick := 500 * time.Millisecond
+	var fileSize int64
+	timeout := time.Now().Add(time.Minute)
+	for {
+		time.Sleep(tick)
+		// TODO(mpl): download starts late if it's a video. figure out if dl can only
+		// start after video has started playing or something like that?
+		if !started && time.Now().After(timeout) {
+			return "", fmt.Errorf("downloading in %q took too long to start", s.dlDir)
+		}
+		if started && time.Now().After(timeout) {
+			return "", fmt.Errorf("timeout while downloading in %q", s.dlDir)
+		}
+
+		entries, err := ioutil.ReadDir(s.dlDir)
+		if err != nil {
+			return "", err
+		}
+		var fileEntries []os.FileInfo
+		for _, v := range entries {
+			if v.IsDir() {
+				continue
+			}
+			if v.Name() == ".lastdone" {
+				continue
+			}
+			fileEntries = append(fileEntries, v)
+		}
+		if len(fileEntries) < 1 {
+			continue
+		}
+		if len(fileEntries) > 1 {
+			return "", fmt.Errorf("more than one file (%d) in download dir %q", len(fileEntries), s.dlDir)
+		}
+		if !started {
+			if len(fileEntries) > 0 {
+				started = true
+				timeout = time.Now().Add(time.Minute)
+			}
+		}
+		newFileSize := fileEntries[0].Size()
+		if newFileSize > fileSize {
+			// push back the timeout as long as we make progress
+			timeout = time.Now().Add(time.Minute)
+			fileSize = newFileSize
+		}
+		if !strings.HasSuffix(fileEntries[0].Name(), ".crdownload") {
+			// download is over
+			filename = fileEntries[0].Name()
+			break
+		}
+	}
+
+	if err := markDone(s.dlDir, location); err != nil {
+		return "", err
+	}
+
+	return filename, nil
+}
+
+func (s Session) moveDownload(ctx context.Context, dlFile, location string) (string, error) {
+	parts := strings.Split(location, "/")
+	if len(parts) < 5 {
+		return "", fmt.Errorf("not enough slash separated parts in location %v: %d", location, len(parts))
+	}
+	newDir := filepath.Join(s.dlDir, parts[4])
+	if err := os.MkdirAll(newDir, 0700); err != nil {
+		return "", err
+	}
+	newFile := filepath.Join(newDir, dlFile)
+	if err := os.Rename(filepath.Join(s.dlDir, dlFile), newFile); err != nil {
+		return "", err
+	}
+	return newFile, nil
+}
+
+func (s Session) dlAndMove(ctx context.Context, location string) (string, error) {
+	dlFile, err := s.download(ctx, location)
+	if err != nil {
+		return "", err
+	}
+	return s.moveDownload(ctx, dlFile, location)
+}
+
+func (s Session) navN(N int) func(context.Context) error {
+	return func(ctx context.Context) error {
+		n := 0
+		if N == 0 {
+			return nil
+		}
+		var location, prevLocation string
+
+		for {
+			if err := chromedp.Location(&location).Do(ctx); err != nil {
+				return err
+			}
+			if location == prevLocation {
+				break
+			}
+			prevLocation = location
+			filePath, err := s.dlAndMove(ctx, location)
+			if err != nil {
+				return err
+			}
+			// TODO(mpl): do run in a go routine?
+			if err := doRun(filePath); err != nil {
+				return err
+			}
+			n++
+			if N > 0 && n >= N {
+				break
+			}
+			if err := navLeft(ctx); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 }
