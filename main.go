@@ -198,12 +198,24 @@ func login(ctx context.Context) error {
 			return nil
 		}),
 		chromedp.Navigate("https://photos.google.com/"),
+		// when we're not authenticated, the URL is actually
+		// https://www.google.com/photos/about/ , so we rely on that to detect when we have
+		// authenticated.
+		// TODO(mpl): add timeout
 		chromedp.ActionFunc(func(ctx context.Context) error {
-			if *devFlag {
-				//				chromedp.Sleep(5*time.Second).Do(ctx)
-				chromedp.Sleep(15 * time.Second).Do(ctx)
-			} else {
-				chromedp.Sleep(30 * time.Second).Do(ctx)
+			time.Sleep(time.Second)
+			var location string
+			for {
+				if err := chromedp.Location(&location).Do(ctx); err != nil {
+					return err
+				}
+				if location == "https://photos.google.com/" {
+					return nil
+				}
+				if *verboseFlag {
+					log.Printf("Not yet authenticated, at: %v", location)
+				}
+				time.Sleep(time.Second)
 			}
 			return nil
 		}),
