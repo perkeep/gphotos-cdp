@@ -38,25 +38,29 @@ func main() {
 		return
 	}
 	if !*devFlag && *startFlag != "" {
-		log.Fatal("-start only allowed in dev mode")
+		log.Print("-start only allowed in dev mode")
+		return
 	}
 	s, err := NewSession()
 	if err != nil {
-		log.Fatal(err)
+		log.Print(err)
+		return
 	}
 	defer s.Shutdown()
 
 	log.Printf("Session Dir: %v", s.profileDir)
 
 	if err := s.cleanDlDir(); err != nil {
-		log.Fatal(err)
+		log.Print(err)
+		return
 	}
 
 	ctx, cancel := s.NewContext()
 	defer cancel()
 
 	if err := login(ctx); err != nil {
-		log.Fatal(err)
+		log.Print(err)
+		return
 	}
 
 	if err := chromedp.Run(ctx,
@@ -73,7 +77,8 @@ func main() {
 		chromedp.ActionFunc(s.firstNav),
 		chromedp.ActionFunc(s.navN(*nItemsFlag)),
 	); err != nil {
-		log.Fatal(err)
+		log.Print(err)
+		return
 	}
 	fmt.Println("OK")
 }
@@ -201,11 +206,14 @@ func login(ctx context.Context) error {
 		// when we're not authenticated, the URL is actually
 		// https://www.google.com/photos/about/ , so we rely on that to detect when we have
 		// authenticated.
-		// TODO(mpl): add timeout
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			time.Sleep(time.Second)
+			timeout := time.Now().Add(2 * time.Minute)
 			var location string
 			for {
+				if time.Now().After(timeout) {
+					return errors.New("timeout waiting for authentication")
+				}
 				if err := chromedp.Location(&location).Do(ctx); err != nil {
 					return err
 				}
@@ -341,16 +349,16 @@ func (s Session) download(ctx context.Context, location string) (string, error) 
 	started := false
 	tick := 500 * time.Millisecond
 	var fileSize int64
-	timeout := time.Now().Add(time.Minute)
+	deadline := time.Now().Add(time.Minute)
 	for {
 		time.Sleep(tick)
 		// TODO(mpl): download starts late if it's a video. figure out if dl can only
 		// start after video has started playing or something like that?
-		if !started && time.Now().After(timeout) {
+		if !started && time.Now().After(deadline) {
 			return "", fmt.Errorf("downloading in %q took too long to start", s.dlDir)
 		}
-		if started && time.Now().After(timeout) {
-			return "", fmt.Errorf("timeout while downloading in %q", s.dlDir)
+		if started && time.Now().After(deadline) {
+			return "", fmt.Errorf("hit deadline while downloading in %q", s.dlDir)
 		}
 
 		entries, err := ioutil.ReadDir(s.dlDir)
@@ -376,13 +384,13 @@ func (s Session) download(ctx context.Context, location string) (string, error) 
 		if !started {
 			if len(fileEntries) > 0 {
 				started = true
-				timeout = time.Now().Add(time.Minute)
+				deadline = time.Now().Add(time.Minute)
 			}
 		}
 		newFileSize := fileEntries[0].Size()
 		if newFileSize > fileSize {
 			// push back the timeout as long as we make progress
-			timeout = time.Now().Add(time.Minute)
+			deadline = time.Now().Add(time.Minute)
 			fileSize = newFileSize
 		}
 		if !strings.HasSuffix(fileEntries[0].Name(), ".crdownload") {
