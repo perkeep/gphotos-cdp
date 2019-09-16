@@ -23,7 +23,7 @@ import (
 var (
 	nItemsFlag  = flag.Int("n", -1, "number of items to download. If negative, get them all.")
 	devFlag     = flag.Bool("dev", false, "dev mode. we reuse the same session dir (/tmp/gphotos-cdp), so we don't have to auth at every run.")
-	dlDirFlag   = flag.String("dldir", "", "where to (temporarily) write the downloads. defaults to $HOME/Downloads/gphotos-cdp.")
+	dlDirFlag   = flag.String("dldir", "", "where to write the downloads. defaults to $HOME/Downloads/gphotos-cdp.")
 	startFlag   = flag.String("start", "", "skip all photos until this location is reached. for debugging.")
 	runFlag     = flag.String("run", "", "the program to run on each downloaded item, right after it is dowloaded. It is also the responsibility of that program to remove the downloaded item, if desired.")
 	verboseFlag = flag.Bool("v", false, "be verbose")
@@ -86,11 +86,16 @@ func main() {
 type Session struct {
 	parentContext context.Context
 	parentCancel  context.CancelFunc
-	dlDir         string
-	profileDir    string
-	lastDone      string
+	dlDir         string // dir where the photos get stored
+	profileDir    string // user data session dir. automatically created on chrome startup.
+	// lastDone is the most recent (wrt to Google Photos timeline) item (its URL
+	// really) that was downloaded. If set, it is used as a sentinel, to indicate that
+	// we should skip dowloading all items older than this one.
+	lastDone string
 }
 
+// getLastDone returns the URL of the most recent item that was downloaded in
+// the previous run. If any, it should have been stored in dlDir/.lastdone
 func getLastDone(dlDir string) (string, error) {
 	data, err := ioutil.ReadFile(filepath.Join(dlDir, ".lastdone"))
 	if err != nil {
@@ -174,6 +179,7 @@ func (s *Session) Shutdown() {
 	s.parentCancel()
 }
 
+// cleanDlDir removes all files (but not directories) from s.dlDir
 func (s *Session) cleanDlDir() error {
 	if s.dlDir == "" {
 		return nil
@@ -193,6 +199,8 @@ func (s *Session) cleanDlDir() error {
 	return nil
 }
 
+// login navigates to https://photos.google.com/ and waits for the user to have
+// authenticated (or for 2 minutes to have elapsed).
 func login(ctx context.Context) error {
 	var outerBefore string
 	return chromedp.Run(ctx,
@@ -243,6 +251,10 @@ func login(ctx context.Context) error {
 	)
 }
 
+// firstNav does either of:
+// 1) if a specific photo URL was specified with *startFlag, it navigates to it
+// 2) if the last session marked what was the most recent downloaded photo, it navigates to it
+// 3) otherwise it jumps to the end of the timeline (i.e. the oldest photo)
 func (s Session) firstNav(ctx context.Context) error {
 	if *startFlag != "" {
 		chromedp.Navigate(*startFlag).Do(ctx)
@@ -283,6 +295,7 @@ func (s Session) firstNav(ctx context.Context) error {
 	return nil
 }
 
+// doRun executes the given filePath as a command
 func doRun(filePath string) error {
 	if *runFlag == "" {
 		return nil
@@ -290,6 +303,7 @@ func doRun(filePath string) error {
 	return exec.Command(*runFlag, filePath).Run()
 }
 
+// navLeft navigates to the next item to the left
 func navLeft(ctx context.Context) error {
 	chromedp.KeyEvent(kb.ArrowLeft).Do(ctx)
 	chromedp.WaitReady("body", chromedp.ByQuery)
@@ -297,6 +311,8 @@ func navLeft(ctx context.Context) error {
 	return nil
 }
 
+// markDone saves location in the dldir/.lastdone file, to indicate it is the
+// most recent item downloaded
 func markDone(dldir, location string) error {
 	if *verboseFlag {
 		log.Printf("Marking %v as done", location)
@@ -308,6 +324,8 @@ func markDone(dldir, location string) error {
 	return nil
 }
 
+// startDownload sends the Shift+D event, to start the download of the currently
+// viewed item.
 func startDownload(ctx context.Context) error {
 	keyD, ok := kb.Keys['D']
 	if !ok {
@@ -339,6 +357,9 @@ func startDownload(ctx context.Context) error {
 	return nil
 }
 
+// dowload starts the download of the currently viewed item, and on successful
+// completion saves its location as the most recent item downloaded. It returns
+// with an error if the download stops making any progress for more than a minute.
 func (s Session) download(ctx context.Context, location string) (string, error) {
 
 	if err := startDownload(ctx); err != nil {
@@ -407,6 +428,8 @@ func (s Session) download(ctx context.Context, location string) (string, error) 
 	return filename, nil
 }
 
+// moveDownload creates a directory in s.dlDir named of the item ID found in
+// location. It then moves dlFile in that directory.
 func (s Session) moveDownload(ctx context.Context, dlFile, location string) (string, error) {
 	parts := strings.Split(location, "/")
 	if len(parts) < 5 {
@@ -431,6 +454,9 @@ func (s Session) dlAndMove(ctx context.Context, location string) (string, error)
 	return s.moveDownload(ctx, dlFile, location)
 }
 
+// navN successively downloads the currently viewed item, and navigates to the
+// next item (to the left). It repeats N times or until the last (i.e. the most
+// recent) item is reached. Set a negative N to repeat until the end is reached.
 func (s Session) navN(N int) func(context.Context) error {
 	return func(ctx context.Context) error {
 		n := 0
