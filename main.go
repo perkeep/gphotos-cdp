@@ -295,12 +295,18 @@ func (s Session) firstNav(ctx context.Context) error {
 	return nil
 }
 
-// doRun executes the given filePath as a command
+// doRun runs *runFlag as a command on the given filePath.
 func doRun(filePath string) error {
 	if *runFlag == "" {
 		return nil
 	}
-	return exec.Command(*runFlag, filePath).Run()
+	if *verboseFlag {
+		log.Printf("Running %v on %v", *runFlag, filePath)
+	}
+	cmd := exec.Command(*runFlag, filePath)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 // navLeft navigates to the next item to the left
@@ -373,8 +379,6 @@ func (s Session) download(ctx context.Context, location string) (string, error) 
 	deadline := time.Now().Add(time.Minute)
 	for {
 		time.Sleep(tick)
-		// TODO(mpl): download starts late if it's a video. figure out if dl can only
-		// start after video has started playing or something like that?
 		if !started && time.Now().After(deadline) {
 			return "", fmt.Errorf("downloading in %q took too long to start", s.dlDir)
 		}
