@@ -1,0 +1,3 @@
+#!/bin/sh
+
+pk-put -verbose=true file -filenodes "$1"
