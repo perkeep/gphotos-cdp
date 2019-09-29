@@ -1,3 +1,5 @@
+// This program uses the Chrome DevTools Protocol to drive a Chrome session that
+// downloads your photos stored in Google Photos.
 package main
 
 import (
