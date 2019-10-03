@@ -1,8 +1,25 @@
-// This program uses the Chrome DevTools Protocol to drive a Chrome session that
-// downloads your photos stored in Google Photos.
+/*
+Copyright 2019 The Perkeep Authors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+// The gphotos-cdp program uses the Chrome DevTools Protocol to drive a Chrome session
+// that downloads your photos stored in Google Photos.
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -16,6 +33,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
@@ -31,8 +49,7 @@ var (
 	verboseFlag = flag.Bool("v", false, "be verbose")
 )
 
-// TODO(mpl): in general everywhere, do not rely so much on sleeps. We need
-// better ways to wait for things to be loaded/ready.
+var tick = 500 * time.Millisecond
 
 func main() {
 	flag.Parse()
@@ -60,22 +77,12 @@ func main() {
 	ctx, cancel := s.NewContext()
 	defer cancel()
 
-	if err := login(ctx); err != nil {
+	if err := s.login(ctx); err != nil {
 		log.Print(err)
 		return
 	}
 
 	if err := chromedp.Run(ctx,
-		page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(s.dlDir),
-		chromedp.Navigate("https://photos.google.com/"),
-		chromedp.Sleep(5000*time.Millisecond),
-		chromedp.WaitReady("body", chromedp.ByQuery),
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			if *verboseFlag {
-				log.Printf("body is ready")
-			}
-			return nil
-		}),
 		chromedp.ActionFunc(s.firstNav),
 		chromedp.ActionFunc(s.navN(*nItemsFlag)),
 	); err != nil {
@@ -100,11 +107,11 @@ type Session struct {
 // the previous run. If any, it should have been stored in dlDir/.lastdone
 func getLastDone(dlDir string) (string, error) {
 	data, err := ioutil.ReadFile(filepath.Join(dlDir, ".lastdone"))
-	if err != nil {
-		if !os.IsNotExist(err) {
-			return "", err
-		}
+	if os.IsNotExist(err) {
 		return "", nil
+	}
+	if err != nil {
+		return "", err
 	}
 	return string(data), nil
 }
@@ -203,9 +210,9 @@ func (s *Session) cleanDlDir() error {
 
 // login navigates to https://photos.google.com/ and waits for the user to have
 // authenticated (or for 2 minutes to have elapsed).
-func login(ctx context.Context) error {
-	var outerBefore string
+func (s Session) login(ctx context.Context) error {
 	return chromedp.Run(ctx,
+		page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(s.dlDir),
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			if *verboseFlag {
 				log.Printf("pre-navigate")
@@ -217,7 +224,7 @@ func login(ctx context.Context) error {
 		// https://www.google.com/photos/about/ , so we rely on that to detect when we have
 		// authenticated.
 		chromedp.ActionFunc(func(ctx context.Context) error {
-			time.Sleep(time.Second)
+			tick := time.Second
 			timeout := time.Now().Add(2 * time.Minute)
 			var location string
 			for {
@@ -233,20 +240,13 @@ func login(ctx context.Context) error {
 				if *verboseFlag {
 					log.Printf("Not yet authenticated, at: %v", location)
 				}
-				time.Sleep(time.Second)
+				time.Sleep(tick)
 			}
 			return nil
 		}),
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			if *verboseFlag {
 				log.Printf("post-navigate")
-			}
-			return nil
-		}),
-		chromedp.OuterHTML("html>body", &outerBefore),
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			if *verboseFlag {
-				log.Printf("Source is %d bytes", len(outerBefore))
 			}
 			return nil
 		}),
@@ -261,34 +261,97 @@ func (s Session) firstNav(ctx context.Context) error {
 	if *startFlag != "" {
 		chromedp.Navigate(*startFlag).Do(ctx)
 		chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
-		chromedp.Sleep(5000 * time.Millisecond).Do(ctx)
 		return nil
 	}
 	if s.lastDone != "" {
 		chromedp.Navigate(s.lastDone).Do(ctx)
 		chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
-		chromedp.Sleep(5000 * time.Millisecond).Do(ctx)
 		return nil
 	}
-	// For some reason, I need to do a pagedown before, for the end key to work...
-	chromedp.KeyEvent(kb.PageDown).Do(ctx)
-	chromedp.Sleep(500 * time.Millisecond).Do(ctx)
-	chromedp.KeyEvent(kb.End).Do(ctx)
-	chromedp.Sleep(5000 * time.Millisecond).Do(ctx)
-	chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
-	chromedp.Sleep(500 * time.Millisecond).Do(ctx)
-	chromedp.KeyEvent("\n").Do(ctx)
-	chromedp.Sleep(time.Second).Do(ctx)
-	var location, prevLocation string
-	if err := chromedp.Location(&prevLocation).Do(ctx); err != nil {
+
+	if err := navToEnd(ctx); err != nil {
 		return err
 	}
+
+	if err := navToLast(ctx); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// navToEnd waits for the page to be ready to receive scroll key events, by
+// trying to select an item with the right arrow key, and then scrolls down to the
+// end of the page, i.e. to the oldest items.
+func navToEnd(ctx context.Context) error {
+	// wait for page to be loaded, i.e. that we can make an element active by using
+	// the right arrow key.
 	for {
 		chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
-		chromedp.Sleep(time.Second).Do(ctx)
+		time.Sleep(tick)
+		var ids []cdp.NodeID
+		if err := chromedp.Run(ctx,
+			chromedp.NodeIDs(`document.activeElement`, &ids, chromedp.ByJSPath)); err != nil {
+			return err
+		}
+		if len(ids) > 0 {
+			if *verboseFlag {
+				log.Printf("We are ready, because element %v is selected", ids[0])
+			}
+			break
+		}
+		time.Sleep(tick)
+	}
+
+	// try jumping to the end of the page. detect we are there and have stopped
+	// moving when two consecutive screenshots are identical.
+	var previousScr, scr []byte
+	for {
+		chromedp.KeyEvent(kb.PageDown).Do(ctx)
+		chromedp.KeyEvent(kb.End).Do(ctx)
+		chromedp.CaptureScreenshot(&scr).Do(ctx)
+		if previousScr == nil {
+			previousScr = scr
+			continue
+		}
+		if bytes.Equal(previousScr, scr) {
+			break
+		}
+		previousScr = scr
+		time.Sleep(tick)
+	}
+
+	if *verboseFlag {
+		log.Printf("Successfully jumped to the end")
+	}
+
+	return nil
+}
+
+// navToLast sends the "\n" event until we detect that an item is loaded as a
+// new page. It then sends the right arrow key event until we've reached the very
+// last item.
+func navToLast(ctx context.Context) error {
+	var location, prevLocation string
+	ready := false
+	for {
+		chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
+		time.Sleep(tick)
+		if !ready {
+			chromedp.KeyEvent("\n").Do(ctx)
+			time.Sleep(tick)
+		}
 		if err := chromedp.Location(&location).Do(ctx); err != nil {
 			return err
 		}
+		if !ready {
+			if location != "https://photos.google.com/" {
+				ready = true
+				log.Printf("Nav to the end sequence is started because location is %v", location)
+			}
+			continue
+		}
+
 		if location == prevLocation {
 			break
 		}
@@ -315,7 +378,6 @@ func doRun(filePath string) error {
 func navLeft(ctx context.Context) error {
 	chromedp.KeyEvent(kb.ArrowLeft).Do(ctx)
 	chromedp.WaitReady("body", chromedp.ByQuery)
-	chromedp.Sleep(1 * time.Second).Do(ctx)
 	return nil
 }
 
@@ -376,7 +438,6 @@ func (s Session) download(ctx context.Context, location string) (string, error) 
 
 	var filename string
 	started := false
-	tick := 500 * time.Millisecond
 	var fileSize int64
 	deadline := time.Now().Add(time.Minute)
 	for {
@@ -435,7 +496,8 @@ func (s Session) download(ctx context.Context, location string) (string, error) 
 }
 
 // moveDownload creates a directory in s.dlDir named of the item ID found in
-// location. It then moves dlFile in that directory.
+// location. It then moves dlFile in that directory. It returns the new path
+// of the moved file.
 func (s Session) moveDownload(ctx context.Context, dlFile, location string) (string, error) {
 	parts := strings.Split(location, "/")
 	if len(parts) < 5 {
@@ -483,7 +545,6 @@ func (s Session) navN(N int) func(context.Context) error {
 			if err != nil {
 				return err
 			}
-			// TODO(mpl): do run in a go routine?
 			if err := doRun(filePath); err != nil {
 				return err
 			}
