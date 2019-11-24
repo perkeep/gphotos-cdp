@@ -210,7 +210,7 @@ func (s *Session) cleanDlDir() error {
 
 // login navigates to https://photos.google.com/ and waits for the user to have
 // authenticated (or for 2 minutes to have elapsed).
-func (s Session) login(ctx context.Context) error {
+func (s *Session) login(ctx context.Context) error {
 	return chromedp.Run(ctx,
 		page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(s.dlDir),
 		chromedp.ActionFunc(func(ctx context.Context) error {
@@ -257,7 +257,7 @@ func (s Session) login(ctx context.Context) error {
 // 1) if a specific photo URL was specified with *startFlag, it navigates to it
 // 2) if the last session marked what was the most recent downloaded photo, it navigates to it
 // 3) otherwise it jumps to the end of the timeline (i.e. the oldest photo)
-func (s Session) firstNav(ctx context.Context) error {
+func (s *Session) firstNav(ctx context.Context) error {
 	if *startFlag != "" {
 		chromedp.Navigate(*startFlag).Do(ctx)
 		chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
@@ -430,7 +430,7 @@ func startDownload(ctx context.Context) error {
 // dowload starts the download of the currently viewed item, and on successful
 // completion saves its location as the most recent item downloaded. It returns
 // with an error if the download stops making any progress for more than a minute.
-func (s Session) download(ctx context.Context, location string) (string, error) {
+func (s *Session) download(ctx context.Context, location string) (string, error) {
 
 	if err := startDownload(ctx); err != nil {
 		return "", err
@@ -498,7 +498,7 @@ func (s Session) download(ctx context.Context, location string) (string, error) 
 // moveDownload creates a directory in s.dlDir named of the item ID found in
 // location. It then moves dlFile in that directory. It returns the new path
 // of the moved file.
-func (s Session) moveDownload(ctx context.Context, dlFile, location string) (string, error) {
+func (s *Session) moveDownload(ctx context.Context, dlFile, location string) (string, error) {
 	parts := strings.Split(location, "/")
 	if len(parts) < 5 {
 		return "", fmt.Errorf("not enough slash separated parts in location %v: %d", location, len(parts))
@@ -514,7 +514,7 @@ func (s Session) moveDownload(ctx context.Context, dlFile, location string) (str
 	return newFile, nil
 }
 
-func (s Session) dlAndMove(ctx context.Context, location string) (string, error) {
+func (s *Session) dlAndMove(ctx context.Context, location string) (string, error) {
 	dlFile, err := s.download(ctx, location)
 	if err != nil {
 		return "", err
@@ -525,7 +525,7 @@ func (s Session) dlAndMove(ctx context.Context, location string) (string, error)
 // navN successively downloads the currently viewed item, and navigates to the
 // next item (to the left). It repeats N times or until the last (i.e. the most
 // recent) item is reached. Set a negative N to repeat until the end is reached.
-func (s Session) navN(N int) func(context.Context) error {
+func (s *Session) navN(N int) func(context.Context) error {
 	return func(ctx context.Context) error {
 		n := 0
 		if N == 0 {
