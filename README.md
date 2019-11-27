@@ -23,21 +23,30 @@ Why?
 We want to incrementally download our own photos out of Google Photos.
 
 Google Photos used to have an API to do this (the Picasa Web Albums API) but
-they removed it, replacing it with a new API that doesn't let you download your
-original photos. They instead let you download your photos with mangled EXIF,
-stripping location (and maybe recompressing the image bytes?).
+[they removed it](http://googlephotos.blogspot.com/2016/02/moving-on-from-picasa.html),
+replacing it with a new API that doesn't let you download your
+original photos. They instead let you download your photos
+[with mangled EXIF, stripping location](https://developers.google.com/photos/library/guides/access-media-items#image-base-urls)
+(and maybe recompressing the image bytes?).
 
-We can get our original photos out with Google Takeout, but only manually, and
-very slowly. We don't want to have to remember to do it (or remember to renew
-the time-limited scheduled takeouts) and we'd like our photos mirrored in
-seconds or minutes, not weeks.
+There also used to be a way to sync your Google Photos to Google
+Drive, and then you could use the Google Drive API to download your
+original photos, but Google Photos
+[removed that too](https://www.blog.google/products/photos/simplifying-google-photos-and-google-drive/).
 
-In https://github.com/perkeep/perkeep/issues/1144#issuecomment-525007239, Brad
-Fitzpatrick said that we might have to give up on APIs and resort to scraping,
-noting that the Chrome DevTools Protocol makes this pretty easy. Brad hacked up
-some Go code to drive Chrome (using https://github.com/chromedp/chromedp) and do
-a basic download and then Mathieu Lonjaret made this tool, fleshing out the
-idea.
+We can get our original photos out with [Google Takeout](https://takeout.google.com/),
+but only manually, and slowly. We don't want to have to remember to do
+it (or remember to renew the time-limited scheduled takeouts) and we'd
+like our photos mirrored in seconds or minutes, not weeks.
+
+In [our original Perkeep
+issue](https://github.com/perkeep/perkeep/issues/1144#issuecomment-525007239),
+[@bradfitz](https://github.com/bradfitz/) said that we might have to give up on APIs and resort
+to scraping, noting that the
+[Chrome DevTools Protocol](https://github.com/ChromeDevTools/devtools-protocol) makes this
+pretty easy. Brad hacked up some Go code to drive Chrome (using
+https://github.com/chromedp/chromedp) and do a basic download and then
+[Mathieu Lonjaret](https://github.com/mpl) made this tool, fleshing out the idea.
 
 What if Google Photos breaks this tool on purpose or accident?
 --------
