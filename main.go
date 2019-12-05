@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -51,6 +52,7 @@ var (
 	verboseTimingFlag = flag.Bool("vt", false, "be verbose about timing")
 	listFlag          = flag.Bool("list", false, "Only list, do not download any images")
 	allFlag           = flag.Bool("all", false, "Ignore -start and <dlDir>/.lastDone, start from oldest photo, implied by -list")
+	headlessFlag      = flag.Bool("headless", false, "Start chrome browser in headless mode (cannot do Auth this way).")
 )
 
 var tick = 500 * time.Millisecond
@@ -113,6 +115,10 @@ type Session struct {
 	// really) that was downloaded. If set, it is used as a sentinel, to indicate that
 	// we should skip dowloading all items older than this one.
 	lastDone string
+	// lastPhoto is our termination criteria. It is the first photo in tha album, and hence
+	// it is the last photo to be fetched in the current traversal order.
+	// this field is not initialized in NewSession, because it can only be determined after authentication (in firstNav)
+	lastPhoto string
 }
 
 // getLastDone returns the URL of the most recent item that was downloaded in
@@ -153,6 +159,12 @@ func NewSession() (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
+	// skip navigating to s.lastDone if (-all (implied by -list))
+	if lastDone != "" && *allFlag {
+		log.Printf("Skipping lastDone (-all): %v", lastDone)
+		lastDone = ""
+	}
+
 	s := &Session{
 		profileDir: dir,
 		dlDir:      dlDir,
@@ -162,7 +174,7 @@ func NewSession() (*Session, error) {
 }
 
 func (s *Session) NewContext() (context.Context, context.CancelFunc) {
-	ctx, cancel := chromedp.NewExecAllocator(context.Background(),
+	allocatorOpts := []chromedp.ExecAllocatorOption{
 		chromedp.NoFirstRun,
 		chromedp.NoDefaultBrowserCheck,
 		chromedp.UserDataDir(s.profileDir),
@@ -189,7 +201,13 @@ func (s *Session) NewContext() (context.Context, context.CancelFunc) {
 		chromedp.Flag("enable-automation", true),
 		chromedp.Flag("password-store", "basic"),
 		chromedp.Flag("use-mock-keychain", true),
-	)
+	}
+	if *headlessFlag {
+		allocatorOpts = append(allocatorOpts, chromedp.Flag("headless", true))
+		allocatorOpts = append(allocatorOpts, chromedp.Flag("disable-gpu", true))
+	}
+
+	ctx, cancel := chromedp.NewExecAllocator(context.Background(), allocatorOpts...)
 	s.parentContext = ctx
 	s.parentCancel = cancel
 	ctx, cancel = chromedp.NewContext(s.parentContext)
@@ -271,10 +289,12 @@ func (s *Session) login(ctx context.Context) error {
 // 3) otherwise it jumps to the end of the timeline (i.e. the oldest photo)
 func (s *Session) firstNav(ctx context.Context) error {
 
-	// fetch lastPhoto before bavigating to specific photoURL
-	if err := lastPhoto(ctx); err != nil {
+	// fetch lastPhoto before navigating to specific photoURL
+	lastPhoto, err := lastPhoto(ctx)
+	if err != nil {
 		return err
 	}
+	s.lastPhoto = lastPhoto
 
 	if *startFlag != "" {
 		chromedp.Navigate(*startFlag).Do(ctx)
@@ -298,7 +318,8 @@ func (s *Session) firstNav(ctx context.Context) error {
 	return nil
 }
 
-func lastPhoto(ctx context.Context) error {
+// lastPhoto return the URL for the first image in the album. It is meant to be our termination criteria, as the photos are traversed in reverse order
+func lastPhoto(ctx context.Context) (string, error) {
 	// This should be our TerminationCriteria
 	// extract most recent photo URL
 	// expr := `document.querySelector('a[href^="./photo/"]').href;` // first photo
@@ -308,13 +329,34 @@ func lastPhoto(ctx context.Context) error {
 	var href string
 	ok := false
 	if err := chromedp.AttributeValue(sel, "href", &href, &ok).Do(ctx); err != nil {
-		return err
+		return "", err
 	}
 	if !ok {
-		return errors.New("firstNav: Unable to find most recent photo")
+		return "", errors.New("lastPhoto: Unable to find most recent photo")
 	}
-	log.Printf("Last Photo: %s (first on Landing Page)", href)
-	return nil
+	if last, err := absURL(href); err != nil {
+		return "", err
+	} else {
+		log.Printf("Last Photo: %s (first on Landing Page)", last)
+		return last, nil
+	}
+}
+
+func absURL(href string) (string, error) {
+	// if href is a relative url, e.g.: "./photo/AF1QipMOl0XXrO9WPSv5muLRBFpbyzGsdnrqUqtF8f73"
+	// we need an absolute url: https://photos.google.com/photo/AF1QipMOl0XXrO9WPSv5muLRBFpbyzGsdnrqUqtF8f73
+	u, err := url.Parse(href)
+	if err != nil {
+		return "", err
+	}
+	// the base url could be fetched from the current location, but the login flow already assume that we are at this url
+	base, err := url.Parse("https://photos.google.com/")
+	if err != nil {
+		return "", err
+	}
+	absURL := base.ResolveReference(u).String()
+	return absURL, nil
+
 }
 
 // navToEnd waits for the page to be ready to receive scroll key events, by
@@ -340,6 +382,9 @@ func navToEnd(ctx context.Context) error {
 		time.Sleep(tick)
 	}
 
+	// Not used for now. Just for experimenting alternative navigation
+	// listFromAlbum(ctx)
+
 	// try jumping to the end of the page. detect we are there and have stopped
 	// moving when two consecutive screenshots are identical.
 	var previousScr, scr []byte
@@ -362,6 +407,65 @@ func navToEnd(ctx context.Context) error {
 		log.Printf("Successfully jumped to the end")
 	}
 
+	return nil
+}
+
+var allPhotoIds = map[string]bool{}
+
+// Not used for now. Just for experimenting alternative navigation
+
+func listFromAlbum(ctx context.Context) error {
+	// try looping through all pages
+	// allPhotoIds := map[string]bool{} // temprarily global
+	start := time.Now()
+	deadline := time.Now().Add(5 * time.Second)
+	sel := `a[href^="./photo/"]` // first photo on the landing page
+	for {
+
+		var attrs []map[string]string
+		if err := chromedp.AttributesAll(sel, &attrs).Do(ctx); err != nil {
+			log.Printf("navToEnd: error %s", err)
+		} else {
+			atLeastOne := false
+			for _, a := range attrs {
+				href, err := absURL(a["href"]) // could check that href attr exists
+				if err != nil {
+					log.Printf("navToEnd absURL error: %s", err)
+					return err
+				}
+				if _, ok := allPhotoIds[href]; !ok {
+					allPhotoIds[href] = true
+					if *verboseFlag {
+						log.Printf("listFromAlbum: + %s (total:%d)", href, len(allPhotoIds))
+					}
+					atLeastOne = true
+					deadline = time.Now().Add(10 * time.Second)
+				}
+			}
+			if time.Now().After(deadline) {
+				break
+			}
+			if !atLeastOne {
+				// log.Printf("navToEnd: none added (total:%d) - %s left", len(allPhotoIds), time.Until(deadline))
+			}
+
+		}
+		// ArrowRight is faster overall and doesn't miss any entries
+		chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
+		// PageDown is slower overall and misses some entries
+		// chromedp.KeyEvent(kb.PageDown).Do(ctx)
+		// sleeping doesn't change anything with ArrowRight
+		// time.Sleep(10 * time.Millisecond)
+
+		// TODO(daneroo): revisit this...
+		if *nItemsFlag > 0 && len(allPhotoIds) > *nItemsFlag {
+			break
+		}
+	}
+	log.Printf("listFromAlbum done adding items, found: %d in: %s", len(allPhotoIds), time.Since(start))
+	if *verboseTimingFlag {
+		log.Printf("Rate (%d): %.2f/s Avg Latency: %.2fms", len(allPhotoIds), float64(len(allPhotoIds))/time.Since(start).Seconds(), time.Since(start).Seconds()*1000.0/float64(len(allPhotoIds)))
+	}
 	return nil
 }
 
@@ -415,7 +519,7 @@ func doRun(filePath string) error {
 // navLeft navigates to the next item to the left
 func navLeft(ctx context.Context, prevLocation *string) error {
 	start := time.Now()
-	deadline := start.Add(5 * time.Minute) // sleep max of 5 minutes
+	deadline := start.Add(15 * time.Second) // sleep max of 15 Seconds
 	maxBackoff := 500 * time.Millisecond
 	backoff := 10 * time.Millisecond // exp backoff: 10,20,40,..,maxBackoff,maxBackoff,..
 
@@ -611,15 +715,17 @@ func (s *Session) navN(N int) func(context.Context) error {
 			return nil
 		}
 		var location, prevLocation string
-		totalDuration := 0.0
-		batchDuration := 0.0
-		batchSize := 1000
+		totalDuration := 0.0 // for reporting
+		batchDuration := 0.0 // for reporting
+		batchSize := 1000    // We force a browser reload every batchSize iterations
 
 		for {
 			start := time.Now()
 			if err := chromedp.Location(&location).Do(ctx); err != nil {
 				return err
 			}
+
+			// This is still active as a termination criteria, but is pre-empted by location == s.lastPhoto below
 			if location == prevLocation {
 				break
 			}
@@ -634,6 +740,11 @@ func (s *Session) navN(N int) func(context.Context) error {
 					return err
 				}
 			} else {
+				// This is to test the completeness of the listFromAlbum
+				// _, ok := allPhotoIds[location]
+				// if !ok {
+				// 	log.Printf("Listing (%d): %v found:%v", n, location, ok)
+				// }
 				if *verboseFlag {
 					log.Printf("Listing (%d): %v", n, location)
 				}
@@ -643,12 +754,19 @@ func (s *Session) navN(N int) func(context.Context) error {
 			if N > 0 && n >= N {
 				break
 			}
-			// better termination - print rate befaore leaving?
+
+			// Termination criteria: s.lastPhoto reached
+			if location == s.lastPhoto {
+				log.Printf("Last photo reached (%d): %v", n, location)
+				break
+			}
 			if err := navLeft(ctx, &prevLocation); err != nil {
 				return err
 			}
 			totalDuration += time.Since(start).Seconds()
 			batchDuration += time.Since(start).Seconds()
+
+			// Reload page on batch boundary
 			if n%batchSize == 0 {
 
 				// This is where we reload the page - this reduces accumulated latency significantly
@@ -656,7 +774,7 @@ func (s *Session) navN(N int) func(context.Context) error {
 				reloadStart := time.Now()
 				if err := chromedp.Reload().Do(ctx); err != nil {
 					if *verboseTimingFlag {
-						log.Printf(". Avg Latency (last %d @ %d):  Marginal:%.2fms Cumulative: %.2fms",
+						log.Printf(". Avg Latency (last %d @ %d):  Marginal: %.2fms Cumulative: %.2fms",
 							batchSize, n, batchDuration*1000.0/float64(batchSize), totalDuration*1000.0/float64(n))
 					}
 					log.Printf("Failed to reload Page at n:%d", n)
@@ -665,7 +783,7 @@ func (s *Session) navN(N int) func(context.Context) error {
 				}
 
 				if *verboseTimingFlag {
-					log.Printf(". Avg Latency (last %d @ %d):  Marginal:%.2fms Cumulative: %.2fms Page Reloaded:%s",
+					log.Printf(". Avg Latency (last %d @ %d):  Marginal: %.2fms Cumulative: %.2fms Page Reloaded:%s",
 						batchSize, n, batchDuration*1000.0/float64(batchSize), totalDuration*1000.0/float64(n), time.Since(reloadStart))
 				}
 				if *verboseFlag {
