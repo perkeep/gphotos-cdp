@@ -1,26 +1,26 @@
 # Notes for PR(daneroo) feature/listing branch
 
-I don't expect this to be merged as is. I mostly wanted to share my experiments.
+I don't expect this to be merged as-is. I mostly wanted to share my experiments and get feedback.
 
 If any of it is useful, I can craft proper commits with smaller features.
 
-*I am a first time contributor, and not very experienced with Go, so would appreciate any feedback both on content and process.*
+*I am a first-time contributor, and not very experienced with Go, so would appreciate any feedback both on content and process.*
 
 ## Overview
 
-When I first started to use the project, I experienced instability, and would need to restart the download process a large number of times to get to the end. The process would timeout after 1000-4000 images. To test, I use two accounts one with ~700 images, and one with 31k images.
+When I first started to use the project, I experienced instability and would need to restart the download process a large number of times to get to the end. The process would timeout after 1000-4000 images. To test, I use two accounts one with ~700 images, and one with 31k images.
 
-The timeouts were mostly coming from the `navLeft()` iterator, so I disabled actual downloading and fucused on traversal. (`-list` option). I also added an option (`-all`) to bypass the incremental behavior of `$dldir/.lastDone`. I then added `-vt (VerboseTiming`, to isolate timing metrics reporting specifically.
+The timeouts were mostly coming from the `navLeft()` iterator, so I disabled actual downloading and focused on traversal. (`-list` option). I also added an option (`-all`) to bypass the incremental behavior of `$dldir/.lastDone`. I then added `-vt (VerboseTiming`, to isolate timing metrics reporting specifically.
 
-The last main issue was a degradation of performance over time. Probably due to resource leaks in the webapp, especially when iterating at high speed. I found that the simplest solution to this was simply to force a reload every 1000 iterations. This typically takes about `1s` and avoids the `10X` slowdown I was obeserving.
+The last main issue was the degradation of performance over time. Probably due to resource leaks in the webapp, especially when iterating at high speed. I found that the simplest solution to this was simply to force a reload every 1000 iterations. This typically takes about `1s` and avoids the `10X` slowdown I was observing.
 
-Following are details of each of the major changes.
+The following are details of each of the major changes.
 
 ## `navLeft()`
 
 - By adding the `-list` option, its functionality is isolated.
-- Remove `WaitReady("body",..)`, as it has no effect (The document stays loaaded when we navigate from image to image), and replace it with a loop (until `location != prevLocation`).
-- When only listing, this is the critical part of the loop, so I spent some time experimenting with the timing of the chromedp interactions to optimize total throughput. What seemed to work best was an exponential backoff, so that we can benefit from the *most likely* fast navigation, but don't overtax the browser when we experiene the occasional longer naviagation delay (which can go up to multiple seconds).
+- Remove `WaitReady("body",..)`, as it has no effect (The document stays loaded when we navigate from image to image), and replace it with a loop (until `location != prevLocation`).
+- When only listing, this is the critical part of the loop, so I spent some time experimenting with the timing of the chromedp interactions to optimize total throughput. What seemed to work best was an exponential backoff, so that we can benefit from the *most likely* fast navigation, but don't overtax the browser when we experience the occasional longer navigation delay (which can go up to multiple seconds).
 
 - We also pass in `prevLoaction` from `navN()`, to support the new `navLeft()` loop, to optimize the throughput.
 
@@ -32,21 +32,21 @@ Following are details of each of the major changes.
 
 ## Termination Criteria
 
-We explicitly fetch the lastPhoto, on the main album page (immediately after authentication), and rely on that, instead of `navLeft()` failing to navigate (`location == prevLocation`). The lastPhoto is determined with a CSS selector evaluation (`a[href^="./photo/"]`), which is fast and should be stable over time, as it uses the `<a href=.. >` detail navigation mechanism of the main album page. This opens another possibility for iteration in the album page itself. (see `listFromAlbum` below)
+We explicitly fetch the lastPhoto, on the main album page (immediately after authentication), and rely on that, instead of `navLeft()` failing to navigate (`location == prevLocation`). The lastPhoto is determined with a CSS selector evaluation (`a[href^="./photo/"]`), which is fast and should be stable over time, as it uses the `<a href=.. >` detail navigation mechanism of the main album page. This opens another possibility for iteration on the album page itself. (see `listFromAlbum` below)
 
-Another issue, although the `.lasDone` being captured on a successful run is useful, as photos are listed in exif date order, if older photos are added to the album they would not appear in subsequent runs. So it would be useful in general to rerun over the entire album (`-all`).
+Another issue, although the `.lasDone` being captured on a successful run is useful, as photos are listed in EXIF date order. If older photos are added to the album they would not appear in subsequent runs. So it would be useful in general to rerun over the entire album (`-all`).
 
 ## Headless
 
-If we don't need the authentication flow, (and we persist the auth creds in the profile `-dev`), Chrome can be brought up in `-headless` mode, which considerably reduces memory footprint (`>2Gb` to `<500Mb`), and margninally (23%) increases throughput for the listing experiment.
+If we don't need the authentication flow, (and we persist the auth creds in the profile `-dev`), Chrome can be brought up in `-headless` mode, which considerably reduces memory footprint (`>2Gb` to `<500Mb`), and marginally (23%) increases throughput for the listing experiment.
 
 ## `listFromAlbum()`
 
-This is another experiment where listing was entirely performed in the main album page (by scrolling incrementally). This is even faster. It would also allow iterating either forwards or backwards through the album.
+This is another experiment where the listing was entirely performed in the main album page (by scrolling incrementally). This is even faster. It would also allow iterating either forward or backward through the album.
 
-In a further experiment I would like to use this process as a coordinating mechanism and perform the actual downloads in separate (potentially multiple) `tabs/contexts`.
+In a further experiment, I would like to use this process as a coordinating mechanism and perform the actual downloads in separate (potentially multiple) `tabs/contexts`.
 
-### Performance: An Argument for periodic page reload and headless mode
+### Performance: An Argument for a periodic page reload and headless mode
 
 Notice how the latency grows quickly without page reload (ms per iteration): [66, 74, 89, 219, 350, 1008,...], and the cumulative rate drops below `4 items/s` after `6000` items.
 
@@ -97,7 +97,6 @@ When using `listFromAlbum()`, we can roughly double the iterations speed again t
 ## TODO
 
 *Move to Document as done.*
-
 - Review Nomenclature, start,end,newest,last,left,right...
 - Refactor common chromedp uses in navLeft,navRight,navToEnd,navToLast
 - `navLeft()` - throw error if loc==prevLoc
