@@ -19,7 +19,6 @@ limitations under the License.
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -33,7 +32,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
@@ -280,52 +278,68 @@ func (s *Session) firstNav(ctx context.Context) error {
 	return nil
 }
 
-// navToEnd waits for the page to be ready to receive scroll key events, by
-// trying to select an item with the right arrow key, and then scrolls down to the
-// end of the page, i.e. to the oldest items.
+// navToEnd waits for the page to be ready to receive scroll key events,
+// and then scrolls down to the end of the page, i.e. to the oldest items.
 func navToEnd(ctx context.Context) error {
-	// wait for page to be loaded, i.e. that we can make an element active by using
-	// the right arrow key.
-	for {
-		chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
-		time.Sleep(tick)
-		var ids []cdp.NodeID
-		if err := chromedp.Run(ctx,
-			chromedp.NodeIDs(`document.activeElement`, &ids, chromedp.ByJSPath)); err != nil {
-			return err
-		}
-		if len(ids) > 0 {
-			if *verboseFlag {
-				log.Printf("We are ready, because element %v is selected", ids[0])
-			}
-			break
-		}
-		time.Sleep(tick)
-	}
+	// wait for page to be loaded
+	chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
 
-	// try jumping to the end of the page. detect we are there and have stopped
-	// moving when two consecutive screenshots are identical.
-	var previousScr, scr []byte
+	// Try scrolling to the end of the page.
+	// After each scroll attempt we extract the last Photo Page Element (href) from the DOM.
+	// We detect we are at the end when two consecutive DOM extractions are identical.
+	var previousHref string
 	for {
 		chromedp.KeyEvent(kb.PageDown).Do(ctx)
 		chromedp.KeyEvent(kb.End).Do(ctx)
-		chromedp.CaptureScreenshot(&scr).Do(ctx)
-		if previousScr == nil {
-			previousScr = scr
-			continue
+		time.Sleep(tick) // sleep *before* we establish new state in DOM
+
+		// Extract last Photo Page Element (href) from DOM.
+		lastHrefInDOM, err := lastPhotoInDOM(ctx)
+		if err != nil {
+			continue // Just ignore this error, continue will retry.
 		}
-		if bytes.Equal(previousScr, scr) {
+		if previousHref == lastHrefInDOM {
 			break
 		}
-		previousScr = scr
-		time.Sleep(tick)
+		previousHref = lastHrefInDOM
+	}
+
+	// Now that we have stopped scrolling, select (focus) on the last element
+	// The element must be focused, so that navToLast can send "\n" to enter photo detail page
+	lastEltSel := fmt.Sprintf(`a[href="%s"]`, previousHref)
+	if err := chromedp.Focus(lastEltSel).Do(ctx); err != nil {
+		log.Printf("Error focus: %s", lastEltSel)
 	}
 
 	if *verboseFlag {
-		log.Printf("Successfully jumped to the end")
+		log.Printf("Successfully jumped to the end: %s", previousHref)
+	}
+	return nil
+}
+
+// When in the Main/Album Page, the DOM contains <a href=".." /> elements for all visible images.
+// lastPhotoInDOM simply returns the last such href in document order.
+// The DOM actually contains more images than those that are visible, in a kind of virtual scrolling window
+// In the DOM, but not reflecting exactly the visible photos (actually a superset of the visible elements):
+//  <a href="./photo/AF1QipAAAAAA" aria=label="Photo - Portrait - Jul 15, 2010, 2:10:48 PM"/>
+//  <a href="./photo/AF1QipBBBBBB" aria-label="Photo - Landscape - Jul 15, 2010, 2:03:10 PM"/>
+//  <a href="./photo/AF1QipCCCCCC" aria-label="Video - Landscape - Jul 30, 2010, 7:20:22 PM"/>
+// We tried to find the actual *oldest* photo by using the aria-label attribute which contains a date for the photo,
+// unfortunately that label is localised for each user's language which makes the date format very hard to parse.
+func lastPhotoInDOM(ctx context.Context) (string, error) {
+	sel := `a[href^="./photo/"]` // css selector for all links to images with href prefix "./photo/..."
+	var attrs []map[string]string
+	if err := chromedp.AttributesAll(sel, &attrs).Do(ctx); err != nil {
+		log.Printf("lastPhotoInDOM: document.quertSelectorAll:%s error %s", sel, err)
+		return "", err
+	}
+	if len(attrs) == 0 {
+		return "", fmt.Errorf("lastPhotoInDOM: no elements match")
 	}
 
-	return nil
+	lastElement := attrs[len(attrs)-1]
+	href := lastElement["href"]
+	return href, nil
 }
 
 // navToLast sends the "\n" event until we detect that an item is loaded as a
@@ -377,7 +391,8 @@ func doRun(filePath string) error {
 // navLeft navigates to the next item to the left
 func navLeft(ctx context.Context) error {
 	chromedp.KeyEvent(kb.ArrowLeft).Do(ctx)
-	chromedp.WaitReady("body", chromedp.ByQuery)
+	// Could wait for the location to change instead of this Sleep.
+	time.Sleep(200 * time.Millisecond)
 	return nil
 }
 
@@ -552,6 +567,7 @@ func (s *Session) navN(N int) func(context.Context) error {
 			if N > 0 && n >= N {
 				break
 			}
+
 			if err := navLeft(ctx); err != nil {
 				return err
 			}
