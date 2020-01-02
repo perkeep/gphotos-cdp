@@ -61,6 +61,10 @@ func main() {
 		log.Print("-start only allowed in dev mode")
 		return
 	}
+	if !*devFlag && *headlessFlag {
+		log.Print("-headless only allowed in dev mode")
+		return
+	}
 	s, err := NewSession()
 	if err != nil {
 		log.Print(err)
@@ -225,6 +229,9 @@ func (s *Session) login(ctx context.Context) error {
 				if location == "https://photos.google.com/" {
 					return nil
 				}
+				if *headlessFlag {
+					return errors.New("You cannot authenticate in -headless mode")
+				}
 				if *verboseFlag {
 					log.Printf("Not yet authenticated, at: %v", location)
 				}
@@ -260,7 +267,6 @@ func (s *Session) firstNav(ctx context.Context) error {
 	if err := navToEnd(ctx); err != nil {
 		return err
 	}
-	log.Printf("Nav to end- DONE")
 
 	if err := navToLast(ctx); err != nil {
 		return err
@@ -321,11 +327,9 @@ func navToEnd(ctx context.Context) error {
 // new page. It then sends the right arrow key event until we've reached the very
 // last item.
 func navToLast(ctx context.Context) error {
-	log.Printf("Nav to last- START")
 	var location, prevLocation string
 	ready := false
 	for {
-		log.Printf("Nav to last...")
 		chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
 		time.Sleep(tick)
 		if !ready {
@@ -368,7 +372,9 @@ func doRun(filePath string) error {
 // navLeft navigates to the next item to the left
 func navLeft(ctx context.Context) error {
 	chromedp.KeyEvent(kb.ArrowLeft).Do(ctx)
-	chromedp.WaitReady("body", chromedp.ByQuery)
+	// Could wait for the location to change instead of this Sleep.
+	time.Sleep(200 * time.Millisecond)
+
 	return nil
 }
 
