@@ -308,7 +308,7 @@ func navToEnd(ctx context.Context) error {
 	// The element must be focused, so that navToLast can send "\n" to enter photo detail page
 	lastEltSel := fmt.Sprintf(`a[href="%s"]`, previousHref)
 	if err := chromedp.Focus(lastEltSel).Do(ctx); err != nil {
-		log.Printf("Error focus: %s", lastEltSel)
+		return err
 	}
 
 	if *verboseFlag {
@@ -330,7 +330,6 @@ func lastPhotoInDOM(ctx context.Context) (string, error) {
 	sel := `a[href^="./photo/"]` // css selector for all links to images with href prefix "./photo/..."
 	var attrs []map[string]string
 	if err := chromedp.AttributesAll(sel, &attrs).Do(ctx); err != nil {
-		log.Printf("lastPhotoInDOM: document.quertSelectorAll:%s error %s", sel, err)
 		return "", err
 	}
 	if len(attrs) == 0 {
