@@ -390,8 +390,7 @@ func doRun(filePath string) error {
 // navLeft navigates to the next item to the left
 func navLeft(ctx context.Context) error {
 	chromedp.KeyEvent(kb.ArrowLeft).Do(ctx)
-	// Could wait for the location to change instead of this Sleep.
-	time.Sleep(200 * time.Millisecond)
+	chromedp.WaitReady("body", chromedp.ByQuery)
 	return nil
 }
 
