@@ -278,67 +278,44 @@ func (s *Session) firstNav(ctx context.Context) error {
 	return nil
 }
 
-// navToEnd waits for the page to be ready to receive scroll key events,
-// and then scrolls down to the end of the page, i.e. to the oldest items.
+// navToEnd selects the last item in the page
+//  by repeatedly advances the selected item with
+//  - kb.ArrowRight (which causes an initial selection, and/or advances it by one)
+//  - kb.End which scrolls to the end of the page, and advances the selected item.
+// Note timing is important, because when the kb.End causes significant scrolling,
+//  the active element become undefined for a certain time, in that case, we get an error (ignore), sleep, and retry.
+// The termnation criteria is that the selected item (document.activeElement.href) is stable for >2 iterations
 func navToEnd(ctx context.Context) error {
-	// wait for page to be loaded
-	chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
-
-	// Try scrolling to the end of the page.
-	// After each scroll attempt we extract the last Photo Page Element (href) from the DOM.
-	// We detect we are at the end when two consecutive DOM extractions are identical.
-	var previousHref string
+	var prev, active string
+	lastRepeated := 0
 	for {
-		chromedp.KeyEvent(kb.PageDown).Do(ctx)
+		chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
 		chromedp.KeyEvent(kb.End).Do(ctx)
-		time.Sleep(tick) // sleep *before* we establish new state in DOM
+		time.Sleep(tick)
 
-		// Extract last Photo Page Element (href) from DOM.
-		lastHrefInDOM, err := lastPhotoInDOM(ctx)
-		if err != nil {
-			continue // Just ignore this error, continue will retry.
+		if err := chromedp.Evaluate(`document.activeElement.href`, &active).Do(ctx); err != nil {
+			time.Sleep(tick) // this extra sleep is important: after the kb.End, it sometimes takes a while for the active element to be reset
+			continue         // ignore this error: no active element, or active element has no href
 		}
-		if previousHref == lastHrefInDOM {
+		if active == prev {
+			lastRepeated++
+		} else {
+			lastRepeated = 0
+		}
+		if *verboseFlag {
+			log.Printf("** navToEnd:activeElt %s %d", active, lastRepeated)
+		}
+		if lastRepeated > 2 {
 			break
 		}
-		previousHref = lastHrefInDOM
+		prev = active
+		// time.Sleep(tick)
 	}
-
-	// Now that we have stopped scrolling, select (focus) on the last element
-	// The element must be focused, so that navToLast can send "\n" to enter photo detail page
-	lastEltSel := fmt.Sprintf(`a[href="%s"]`, previousHref)
-	if err := chromedp.Focus(lastEltSel).Do(ctx); err != nil {
-		return err
-	}
-
 	if *verboseFlag {
-		log.Printf("Successfully jumped to the end: %s", previousHref)
+		log.Printf("Successfully jumped to the end: %s", active)
 	}
+
 	return nil
-}
-
-// When in the Main/Album Page, the DOM contains <a href=".." /> elements for all visible images.
-// lastPhotoInDOM simply returns the last such href in document order.
-// The DOM actually contains more images than those that are visible, in a kind of virtual scrolling window
-// In the DOM, but not reflecting exactly the visible photos (actually a superset of the visible elements):
-//  <a href="./photo/AF1QipAAAAAA" aria=label="Photo - Portrait - Jul 15, 2010, 2:10:48 PM"/>
-//  <a href="./photo/AF1QipBBBBBB" aria-label="Photo - Landscape - Jul 15, 2010, 2:03:10 PM"/>
-//  <a href="./photo/AF1QipCCCCCC" aria-label="Video - Landscape - Jul 30, 2010, 7:20:22 PM"/>
-// We tried to find the actual *oldest* photo by using the aria-label attribute which contains a date for the photo,
-// unfortunately that label is localised for each user's language which makes the date format very hard to parse.
-func lastPhotoInDOM(ctx context.Context) (string, error) {
-	sel := `a[href^="./photo/"]` // css selector for all links to images with href prefix "./photo/..."
-	var attrs []map[string]string
-	if err := chromedp.AttributesAll(sel, &attrs).Do(ctx); err != nil {
-		return "", err
-	}
-	if len(attrs) == 0 {
-		return "", fmt.Errorf("lastPhotoInDOM: no elements match")
-	}
-
-	lastElement := attrs[len(attrs)-1]
-	href := lastElement["href"]
-	return href, nil
 }
 
 // navToLast sends the "\n" event until we detect that an item is loaded as a
