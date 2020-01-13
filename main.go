@@ -283,8 +283,10 @@ func (s *Session) firstNav(ctx context.Context) error {
 //  - kb.ArrowRight (which causes an initial selection, and/or advances it by one)
 //  - kb.End which scrolls to the end of the page, and advances the selected item.
 // Note timing is important, because when the kb.End causes significant scrolling,
-//  the active element become undefined for a certain time, in that case, we get an error (ignore), sleep, and retry.
-// The termnation criteria is that the selected item (document.activeElement.href) is stable for >2 iterations
+// the active element become undefined for a certain time, in that case, we
+// get an error (ignore), sleep, and retry.
+// The termnation criteria is that the selected item (document.activeElement.href)
+// is stable for >2 iterations
 func navToEnd(ctx context.Context) error {
 	var prev, active string
 	lastRepeated := 0
@@ -294,8 +296,12 @@ func navToEnd(ctx context.Context) error {
 		time.Sleep(tick)
 
 		if err := chromedp.Evaluate(`document.activeElement.href`, &active).Do(ctx); err != nil {
-			time.Sleep(tick) // this extra sleep is important: after the kb.End, it sometimes takes a while for the active element to be reset
-			continue         // ignore this error: no active element, or active element has no href
+			// This extra sleep is important: after the kb.End,
+			// it sometimes takes a while for the scrolled page to be in a state
+			// which allows the next kb.ArrowRight to take effect and actually select
+			// the next element at the new scroll position.
+			time.Sleep(tick)
+			continue // ignore this error: no active element, or active element has no href
 		}
 		if active == prev {
 			lastRepeated++
@@ -309,7 +315,6 @@ func navToEnd(ctx context.Context) error {
 			break
 		}
 		prev = active
-		// time.Sleep(tick)
 	}
 	if *verboseFlag {
 		log.Printf("Successfully jumped to the end: %s", active)
