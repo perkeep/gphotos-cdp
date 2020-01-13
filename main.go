@@ -309,7 +309,7 @@ func navToEnd(ctx context.Context) error {
 			lastRepeated = 0
 		}
 		if *verboseFlag {
-			log.Printf("** navToEnd:activeElt %s %d", active, lastRepeated)
+			log.Printf("Active element %s was seen %d times", active, lastRepeated+1)
 		}
 		if lastRepeated > 2 {
 			break
