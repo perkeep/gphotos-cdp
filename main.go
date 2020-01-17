@@ -271,15 +271,11 @@ func (s *Session) firstNav(ctx context.Context) error {
 		return err
 	}
 
-	if err := navToLast(ctx); err != nil {
-		return err
-	}
-
 	return nil
 }
 
 // navToEnd selects the last item in the page
-//  by repeatedly advances the selected item with
+//  by repeatedly advancing the selected item with
 //  - kb.ArrowRight (which causes an initial selection, and/or advances it by one)
 //  - kb.End which scrolls to the end of the page, and advances the selected item.
 // Note timing is important, because when the kb.End causes significant scrolling,
@@ -320,38 +316,16 @@ func navToEnd(ctx context.Context) error {
 		log.Printf("Successfully jumped to the end: %s", active)
 	}
 
-	return nil
-}
-
-// navToLast sends the "\n" event until we detect that an item is loaded as a
-// new page. It then sends the right arrow key event until we've reached the very
-// last item.
-func navToLast(ctx context.Context) error {
-	var location, prevLocation string
-	ready := false
-	for {
-		chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
-		time.Sleep(tick)
-		if !ready {
-			chromedp.KeyEvent("\n").Do(ctx)
-			time.Sleep(tick)
-		}
-		if err := chromedp.Location(&location).Do(ctx); err != nil {
-			return err
-		}
-		if !ready {
-			if location != "https://photos.google.com/" {
-				ready = true
-				log.Printf("Nav to the end sequence is started because location is %v", location)
-			}
-			continue
-		}
-
-		if location == prevLocation {
-			break
-		}
-		prevLocation = location
+	chromedp.KeyEvent("\n").Do(ctx)
+	time.Sleep(tick)
+	var location string
+	if err := chromedp.Location(&location).Do(ctx); err != nil {
+		return err
 	}
+
+	log.Printf("Entered Detail Page: %s", location)
+	time.Sleep(tick)
+
 	return nil
 }
 
@@ -370,9 +344,35 @@ func doRun(filePath string) error {
 }
 
 // navLeft navigates to the next item to the left
+// After the navigation sequence (ArrowLeft) is sent, wait for a Location change.
+// If however, after 100ms (maxIterations*miniTick), no change is seen,
+//  then return (we have reached the end)
+// navLeft almost always exits after a single iteration,
+//  but without waiting for the location change, we often see
+//  a failure to navigate, especially on the first invocation,
+//  which causes a (false) early termination of the main navN loop
 func navLeft(ctx context.Context) error {
+	var prevLocation string
+	if err := chromedp.Location(&prevLocation).Do(ctx); err != nil {
+		return err
+	}
+
 	chromedp.KeyEvent(kb.ArrowLeft).Do(ctx)
-	chromedp.WaitReady("body", chromedp.ByQuery)
+
+	maxIterations := 10
+	miniTick := 10 * time.Millisecond
+	var location string
+	for i := 0; i < maxIterations; i++ {
+
+		if err := chromedp.Location(&location).Do(ctx); err != nil {
+			return err
+		}
+		if location != prevLocation {
+			log.Printf("navLeft break at it:%d", i)
+			break
+		}
+		time.Sleep(miniTick)
+	}
 	return nil
 }
 
@@ -533,6 +533,9 @@ func (s *Session) navN(N int) func(context.Context) error {
 				return err
 			}
 			if location == prevLocation {
+				if *verboseFlag {
+					log.Printf("Terminating because we stopped advancing: %s", prevLocation)
+				}
 				break
 			}
 			prevLocation = location
@@ -545,6 +548,9 @@ func (s *Session) navN(N int) func(context.Context) error {
 			}
 			n++
 			if N > 0 && n >= N {
+				if *verboseFlag {
+					log.Printf("Terminating because desired number of items (%d) was reached", n)
+				}
 				break
 			}
 
