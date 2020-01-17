@@ -312,9 +312,6 @@ func navToEnd(ctx context.Context) error {
 		}
 		prev = active
 	}
-	if *verboseFlag {
-		log.Printf("Successfully jumped to the end: %s", active)
-	}
 
 	chromedp.KeyEvent("\n").Do(ctx)
 	time.Sleep(tick)
@@ -323,8 +320,11 @@ func navToEnd(ctx context.Context) error {
 		return err
 	}
 
-	log.Printf("Entered Detail Page: %s", location)
-	time.Sleep(tick)
+	if active == location {
+		if *verboseFlag {
+			log.Printf("Successfully jumped to the end: %s", location)
+		}
+	}
 
 	return nil
 }
