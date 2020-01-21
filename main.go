@@ -344,35 +344,9 @@ func doRun(filePath string) error {
 }
 
 // navLeft navigates to the next item to the left
-// After the navigation sequence (ArrowLeft) is sent, wait for a Location change.
-// If however, after 100ms (maxIterations*miniTick), no change is seen,
-//  then return (we have reached the end)
-// navLeft almost always exits after a single iteration,
-//  but without waiting for the location change, we often see
-//  a failure to navigate, especially on the first invocation,
-//  which causes a (false) early termination of the main navN loop
 func navLeft(ctx context.Context) error {
-	var prevLocation string
-	if err := chromedp.Location(&prevLocation).Do(ctx); err != nil {
-		return err
-	}
-
 	chromedp.KeyEvent(kb.ArrowLeft).Do(ctx)
-
-	maxIterations := 10
-	miniTick := 10 * time.Millisecond
-	var location string
-	for i := 0; i < maxIterations; i++ {
-
-		if err := chromedp.Location(&location).Do(ctx); err != nil {
-			return err
-		}
-		if location != prevLocation {
-			log.Printf("navLeft break at it:%d", i)
-			break
-		}
-		time.Sleep(miniTick)
-	}
+	chromedp.WaitReady("body", chromedp.ByQuery)
 	return nil
 }
 
