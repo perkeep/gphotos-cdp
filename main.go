@@ -58,41 +58,35 @@ func main() {
 		return
 	}
 	if !*devFlag && *startFlag != "" {
-		log.Print("-start only allowed in dev mode")
-		return
+		log.Fatal("-start only allowed in dev mode")
 	}
 	if !*devFlag && *headlessFlag {
-		log.Print("-headless only allowed in dev mode")
-		return
+		log.Fatal("-headless only allowed in dev mode")
 	}
 	s, err := NewSession()
 	if err != nil {
-		log.Print(err)
-		return
+		log.Fatal(err)
 	}
 	defer s.Shutdown()
 
 	log.Printf("Session Dir: %v", s.profileDir)
 
 	if err := s.cleanDlDir(); err != nil {
-		log.Print(err)
-		return
+		log.Fatal(err)
 	}
 
 	ctx, cancel := s.NewContext()
 	defer cancel()
 
 	if err := s.login(ctx); err != nil {
-		log.Print(err)
-		return
+		log.Fatal(err)
 	}
 
 	if err := chromedp.Run(ctx,
 		chromedp.ActionFunc(s.firstNav),
 		chromedp.ActionFunc(s.navN(*nItemsFlag)),
 	); err != nil {
-		log.Print(err)
-		return
+		log.Fatal(err)
 	}
 	fmt.Println("OK")
 }
@@ -230,7 +224,7 @@ func (s *Session) login(ctx context.Context) error {
 					return nil
 				}
 				if *headlessFlag {
-					return errors.New("You cannot authenticate in -headless mode")
+					return errors.New("authentication not possible in -headless mode")
 				}
 				if *verboseFlag {
 					log.Printf("Not yet authenticated, at: %v", location)
@@ -372,9 +366,7 @@ func doRun(filePath string) error {
 // navLeft navigates to the next item to the left
 func navLeft(ctx context.Context) error {
 	chromedp.KeyEvent(kb.ArrowLeft).Do(ctx)
-	// Could wait for the location to change instead of this Sleep.
-	time.Sleep(200 * time.Millisecond)
-
+	chromedp.WaitReady("body", chromedp.ByQuery)
 	return nil
 }
 
