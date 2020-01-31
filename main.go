@@ -41,12 +41,13 @@ import (
 )
 
 var (
-	nItemsFlag  = flag.Int("n", -1, "number of items to download. If negative, get them all.")
-	devFlag     = flag.Bool("dev", false, "dev mode. we reuse the same session dir (/tmp/gphotos-cdp), so we don't have to auth at every run.")
-	dlDirFlag   = flag.String("dldir", "", "where to write the downloads. defaults to $HOME/Downloads/gphotos-cdp.")
-	startFlag   = flag.String("start", "", "skip all photos until this location is reached. for debugging.")
-	runFlag     = flag.String("run", "", "the program to run on each downloaded item, right after it is dowloaded. It is also the responsibility of that program to remove the downloaded item, if desired.")
-	verboseFlag = flag.Bool("v", false, "be verbose")
+	nItemsFlag   = flag.Int("n", -1, "number of items to download. If negative, get them all.")
+	devFlag      = flag.Bool("dev", false, "dev mode. we reuse the same session dir (/tmp/gphotos-cdp), so we don't have to auth at every run.")
+	dlDirFlag    = flag.String("dldir", "", "where to write the downloads. defaults to $HOME/Downloads/gphotos-cdp.")
+	startFlag    = flag.String("start", "", "skip all photos until this location is reached. for debugging.")
+	runFlag      = flag.String("run", "", "the program to run on each downloaded item, right after it is dowloaded. It is also the responsibility of that program to remove the downloaded item, if desired.")
+	verboseFlag  = flag.Bool("v", false, "be verbose")
+	headlessFlag = flag.Bool("headless", false, "Start chrome browser in headless mode (cannot do authentication this way).")
 )
 
 var tick = 500 * time.Millisecond
@@ -57,37 +58,35 @@ func main() {
 		return
 	}
 	if !*devFlag && *startFlag != "" {
-		log.Print("-start only allowed in dev mode")
-		return
+		log.Fatal("-start only allowed in dev mode")
+	}
+	if !*devFlag && *headlessFlag {
+		log.Fatal("-headless only allowed in dev mode")
 	}
 	s, err := NewSession()
 	if err != nil {
-		log.Print(err)
-		return
+		log.Fatal(err)
 	}
 	defer s.Shutdown()
 
 	log.Printf("Session Dir: %v", s.profileDir)
 
 	if err := s.cleanDlDir(); err != nil {
-		log.Print(err)
-		return
+		log.Fatal(err)
 	}
 
 	ctx, cancel := s.NewContext()
 	defer cancel()
 
 	if err := s.login(ctx); err != nil {
-		log.Print(err)
-		return
+		log.Fatal(err)
 	}
 
 	if err := chromedp.Run(ctx,
 		chromedp.ActionFunc(s.firstNav),
 		chromedp.ActionFunc(s.navN(*nItemsFlag)),
 	); err != nil {
-		log.Print(err)
-		return
+		log.Fatal(err)
 	}
 	fmt.Println("OK")
 }
@@ -150,34 +149,21 @@ func NewSession() (*Session, error) {
 }
 
 func (s *Session) NewContext() (context.Context, context.CancelFunc) {
-	ctx, cancel := chromedp.NewExecAllocator(context.Background(),
-		chromedp.NoFirstRun,
-		chromedp.NoDefaultBrowserCheck,
+	// Let's use as a base for allocator options (It implies Headless)
+	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.DisableGPU,
 		chromedp.UserDataDir(s.profileDir),
-
-		chromedp.Flag("disable-background-networking", true),
-		chromedp.Flag("enable-features", "NetworkService,NetworkServiceInProcess"),
-		chromedp.Flag("disable-background-timer-throttling", true),
-		chromedp.Flag("disable-backgrounding-occluded-windows", true),
-		chromedp.Flag("disable-breakpad", true),
-		chromedp.Flag("disable-client-side-phishing-detection", true),
-		chromedp.Flag("disable-default-apps", true),
-		chromedp.Flag("disable-dev-shm-usage", true),
-		chromedp.Flag("disable-extensions", true),
-		chromedp.Flag("disable-features", "site-per-process,TranslateUI,BlinkGenPropertyTrees"),
-		chromedp.Flag("disable-hang-monitor", true),
-		chromedp.Flag("disable-ipc-flooding-protection", true),
-		chromedp.Flag("disable-popup-blocking", true),
-		chromedp.Flag("disable-prompt-on-repost", true),
-		chromedp.Flag("disable-renderer-backgrounding", true),
-		chromedp.Flag("disable-sync", true),
-		chromedp.Flag("force-color-profile", "srgb"),
-		chromedp.Flag("metrics-recording-only", true),
-		chromedp.Flag("safebrowsing-disable-auto-update", true),
-		chromedp.Flag("enable-automation", true),
-		chromedp.Flag("password-store", "basic"),
-		chromedp.Flag("use-mock-keychain", true),
 	)
+
+	if !*headlessFlag {
+		// undo the three opts in chromedp.Headless() which is included in DefaultExecAllocatorOptions
+		opts = append(opts, chromedp.Flag("headless", false))
+		opts = append(opts, chromedp.Flag("hide-scrollbars", false))
+		opts = append(opts, chromedp.Flag("mute-audio", false))
+		// undo DisableGPU from above
+		opts = append(opts, chromedp.Flag("disable-gpu", false))
+	}
+	ctx, cancel := chromedp.NewExecAllocator(context.Background(), opts...)
 	s.parentContext = ctx
 	s.parentCancel = cancel
 	ctx, cancel = chromedp.NewContext(s.parentContext)
@@ -236,6 +222,9 @@ func (s *Session) login(ctx context.Context) error {
 				}
 				if location == "https://photos.google.com/" {
 					return nil
+				}
+				if *headlessFlag {
+					return errors.New("authentication not possible in -headless mode")
 				}
 				if *verboseFlag {
 					log.Printf("Not yet authenticated, at: %v", location)
