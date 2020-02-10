@@ -31,6 +31,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/chromedp/cdproto/cdp"
@@ -365,8 +366,25 @@ func doRun(filePath string) error {
 
 // navLeft navigates to the next item to the left
 func navLeft(ctx context.Context) error {
+	muNavWaiting.Lock()
+	listenEvents = true
+	muNavWaiting.Unlock()
 	chromedp.KeyEvent(kb.ArrowLeft).Do(ctx)
-	chromedp.WaitReady("body", chromedp.ByQuery)
+	muNavWaiting.Lock()
+	navWaiting = true
+	muNavWaiting.Unlock()
+	t := time.NewTimer(time.Minute)
+	select {
+	case <-navDone:
+		if !t.Stop() {
+			<-t.C
+		}
+	case <-t.C:
+		return errors.New("timeout waiting for left navigation")
+	}
+	muNavWaiting.Lock()
+	navWaiting = false
+	muNavWaiting.Unlock()
 	return nil
 }
 
@@ -511,6 +529,38 @@ func (s *Session) dlAndMove(ctx context.Context, location string) (string, error
 	return s.moveDownload(ctx, dlFile, location)
 }
 
+var (
+	muNavWaiting             sync.RWMutex
+	listenEvents, navWaiting = false, false
+	navDone                  = make(chan bool, 1)
+)
+
+func listenNavEvents(ctx context.Context) {
+	chromedp.ListenTarget(ctx, func(ev interface{}) {
+		muNavWaiting.RLock()
+		listen := listenEvents
+		muNavWaiting.RUnlock()
+		if !listen {
+			return
+		}
+		switch ev.(type) {
+		case *page.EventNavigatedWithinDocument:
+			go func() {
+				for {
+					muNavWaiting.RLock()
+					waiting := navWaiting
+					muNavWaiting.RUnlock()
+					if waiting {
+						navDone <- true
+						break
+					}
+					time.Sleep(tick)
+				}
+			}()
+		}
+	})
+}
+
 // navN successively downloads the currently viewed item, and navigates to the
 // next item (to the left). It repeats N times or until the last (i.e. the most
 // recent) item is reached. Set a negative N to repeat until the end is reached.
@@ -520,8 +570,10 @@ func (s *Session) navN(N int) func(context.Context) error {
 		if N == 0 {
 			return nil
 		}
-		var location, prevLocation string
 
+		listenNavEvents(ctx)
+
+		var location, prevLocation string
 		for {
 			if err := chromedp.Location(&location).Do(ctx); err != nil {
 				return err
@@ -541,8 +593,9 @@ func (s *Session) navN(N int) func(context.Context) error {
 			if N > 0 && n >= N {
 				break
 			}
+
 			if err := navLeft(ctx); err != nil {
-				return err
+				return fmt.Errorf("error at %v: %v", location, err)
 			}
 		}
 		return nil
