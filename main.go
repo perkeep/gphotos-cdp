@@ -19,7 +19,6 @@ limitations under the License.
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -34,7 +33,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
@@ -263,90 +261,61 @@ func (s *Session) firstNav(ctx context.Context) error {
 		return err
 	}
 
-	if err := navToLast(ctx); err != nil {
+	return nil
+}
+
+// navToEnd selects the last item in the page
+//  by repeatedly advancing the selected item with
+//  - kb.ArrowRight (which causes an initial selection, and/or advances it by one)
+//  - kb.End which scrolls to the end of the page, and advances the selected item.
+// Note timing is important, because when the kb.End causes significant scrolling,
+// the active element become undefined for a certain time, in that case, we
+// get an error (ignore), sleep, and retry.
+// The termnation criteria is that the selected item (document.activeElement.href)
+// is stable for >2 iterations
+func navToEnd(ctx context.Context) error {
+	var prev, active string
+	lastRepeated := 0
+	for {
+		chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
+		chromedp.KeyEvent(kb.End).Do(ctx)
+		time.Sleep(tick)
+
+		if err := chromedp.Evaluate(`document.activeElement.href`, &active).Do(ctx); err != nil {
+			// This extra sleep is important: after the kb.End,
+			// it sometimes takes a while for the scrolled page to be in a state
+			// which allows the next kb.ArrowRight to take effect and actually select
+			// the next element at the new scroll position.
+			time.Sleep(tick)
+			continue // ignore this error: no active element, or active element has no href
+		}
+		if active == prev {
+			lastRepeated++
+		} else {
+			lastRepeated = 0
+		}
+		if *verboseFlag {
+			log.Printf("Active element %s was seen %d times", active, lastRepeated+1)
+		}
+		if lastRepeated > 2 {
+			break
+		}
+		prev = active
+	}
+
+	chromedp.KeyEvent("\n").Do(ctx)
+	time.Sleep(tick)
+	var location string
+	if err := chromedp.Location(&location).Do(ctx); err != nil {
 		return err
 	}
 
-	return nil
-}
-
-// navToEnd waits for the page to be ready to receive scroll key events, by
-// trying to select an item with the right arrow key, and then scrolls down to the
-// end of the page, i.e. to the oldest items.
-func navToEnd(ctx context.Context) error {
-	// wait for page to be loaded, i.e. that we can make an element active by using
-	// the right arrow key.
-	for {
-		chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
-		time.Sleep(tick)
-		var ids []cdp.NodeID
-		if err := chromedp.Run(ctx,
-			chromedp.NodeIDs(`document.activeElement`, &ids, chromedp.ByJSPath)); err != nil {
-			return err
+	if active == location {
+		if *verboseFlag {
+			log.Printf("Successfully jumped to the end: %s", location)
 		}
-		if len(ids) > 0 {
-			if *verboseFlag {
-				log.Printf("We are ready, because element %v is selected", ids[0])
-			}
-			break
-		}
-		time.Sleep(tick)
 	}
 
-	// try jumping to the end of the page. detect we are there and have stopped
-	// moving when two consecutive screenshots are identical.
-	var previousScr, scr []byte
-	for {
-		chromedp.KeyEvent(kb.PageDown).Do(ctx)
-		chromedp.KeyEvent(kb.End).Do(ctx)
-		chromedp.CaptureScreenshot(&scr).Do(ctx)
-		if previousScr == nil {
-			previousScr = scr
-			continue
-		}
-		if bytes.Equal(previousScr, scr) {
-			break
-		}
-		previousScr = scr
-		time.Sleep(tick)
-	}
-
-	if *verboseFlag {
-		log.Printf("Successfully jumped to the end")
-	}
-
-	return nil
-}
-
-// navToLast sends the "\n" event until we detect that an item is loaded as a
-// new page. It then sends the right arrow key event until we've reached the very
-// last item.
-func navToLast(ctx context.Context) error {
-	var location, prevLocation string
-	ready := false
-	for {
-		chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
-		time.Sleep(tick)
-		if !ready {
-			chromedp.KeyEvent("\n").Do(ctx)
-			time.Sleep(tick)
-		}
-		if err := chromedp.Location(&location).Do(ctx); err != nil {
-			return err
-		}
-		if !ready {
-			if location != "https://photos.google.com/" {
-				ready = true
-				log.Printf("Nav to the end sequence is started because location is %v", location)
-			}
-			continue
-		}
-
-		if location == prevLocation {
-			break
-		}
-		prevLocation = location
-	}
 	return nil
 }
 
@@ -579,6 +548,9 @@ func (s *Session) navN(N int) func(context.Context) error {
 				return err
 			}
 			if location == prevLocation {
+				if *verboseFlag {
+					log.Printf("Terminating because we stopped advancing: %s", prevLocation)
+				}
 				break
 			}
 			prevLocation = location
@@ -591,6 +563,9 @@ func (s *Session) navN(N int) func(context.Context) error {
 			}
 			n++
 			if N > 0 && n >= N {
+				if *verboseFlag {
+					log.Printf("Terminating because desired number of items (%d) was reached", n)
+				}
 				break
 			}
 
