@@ -34,7 +34,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
@@ -101,6 +100,9 @@ type Session struct {
 	// really) that was downloaded. If set, it is used as a sentinel, to indicate that
 	// we should skip dowloading all items older than this one.
 	lastDone string
+	// firstItem is the most recent item in the feed. It is determined at the
+	// beginning of the run, and is used as the final sentinel.
+	firstItem string
 }
 
 // getLastDone returns the URL of the most recent item that was downloaded in
@@ -248,6 +250,10 @@ func (s *Session) login(ctx context.Context) error {
 // 2) if the last session marked what was the most recent downloaded photo, it navigates to it
 // 3) otherwise it jumps to the end of the timeline (i.e. the oldest photo)
 func (s *Session) firstNav(ctx context.Context) error {
+	if err := s.setFirstItem(ctx); err != nil {
+		return err
+	}
+
 	if *startFlag != "" {
 		chromedp.Navigate(*startFlag).Do(ctx)
 		chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
@@ -270,29 +276,43 @@ func (s *Session) firstNav(ctx context.Context) error {
 	return nil
 }
 
-// navToEnd waits for the page to be ready to receive scroll key events, by
-// trying to select an item with the right arrow key, and then scrolls down to the
-// end of the page, i.e. to the oldest items.
-func navToEnd(ctx context.Context) error {
+// setFirstItem looks for the first item, and sets it as s.firstItem.
+// We always run it first even for code paths that might not need s.firstItem,
+// because we also run it for the side-effect of waiting for the first page load to
+// be done, and to be ready to receive scroll key events.
+func (s *Session) setFirstItem(ctx context.Context) error {
 	// wait for page to be loaded, i.e. that we can make an element active by using
 	// the right arrow key.
 	for {
 		chromedp.KeyEvent(kb.ArrowRight).Do(ctx)
 		time.Sleep(tick)
-		var ids []cdp.NodeID
+		attributes := make(map[string]string)
 		if err := chromedp.Run(ctx,
-			chromedp.NodeIDs(`document.activeElement`, &ids, chromedp.ByJSPath)); err != nil {
+			chromedp.Attributes(`document.activeElement`, &attributes, chromedp.ByJSPath)); err != nil {
 			return err
 		}
-		if len(ids) > 0 {
-			if *verboseFlag {
-				log.Printf("We are ready, because element %v is selected", ids[0])
-			}
-			break
+		if len(attributes) == 0 {
+			time.Sleep(tick)
+			continue
 		}
-		time.Sleep(tick)
-	}
 
+		photoHref, ok := attributes["href"]
+		if !ok || !strings.HasPrefix(photoHref, "./photo/") {
+			time.Sleep(tick)
+			continue
+		}
+
+		s.firstItem = strings.TrimPrefix(photoHref, "./photo/")
+		break
+	}
+	if *verboseFlag {
+		log.Printf("Page loaded, most recent item in the feed is: %s", s.firstItem)
+	}
+	return nil
+}
+
+// navToEnd scrolls down to the end of the page, i.e. to the oldest items.
+func navToEnd(ctx context.Context) error {
 	// try jumping to the end of the page. detect we are there and have stopped
 	// moving when two consecutive screenshots are identical.
 	var previousScr, scr []byte
@@ -591,6 +611,9 @@ func (s *Session) navN(N int) func(context.Context) error {
 			}
 			n++
 			if N > 0 && n >= N {
+				break
+			}
+			if strings.HasSuffix(location, s.firstItem) {
 				break
 			}
 
