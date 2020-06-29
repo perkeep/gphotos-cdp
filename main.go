@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,6 +35,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
@@ -190,6 +192,9 @@ func (s *Session) cleanDlDir() error {
 		if v.IsDir() {
 			continue
 		}
+		if v.Name() == ".lastdone" {
+			continue
+		}
 		if err := os.Remove(filepath.Join(s.dlDir, v.Name())); err != nil {
 			return err
 		}
@@ -201,7 +206,7 @@ func (s *Session) cleanDlDir() error {
 // authenticated (or for 2 minutes to have elapsed).
 func (s *Session) login(ctx context.Context) error {
 	return chromedp.Run(ctx,
-		page.SetDownloadBehavior(page.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(s.dlDir),
+		browser.SetDownloadBehavior(browser.SetDownloadBehaviorBehaviorAllow).WithDownloadPath(s.dlDir),
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			if *verboseFlag {
 				log.Printf("pre-navigate")
@@ -255,14 +260,40 @@ func (s *Session) firstNav(ctx context.Context) error {
 	}
 
 	if *startFlag != "" {
+		// TODO(mpl): use RunResponse
 		chromedp.Navigate(*startFlag).Do(ctx)
 		chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
 		return nil
 	}
 	if s.lastDone != "" {
-		chromedp.Navigate(s.lastDone).Do(ctx)
+		resp, err := chromedp.RunResponse(ctx, chromedp.Navigate(s.lastDone))
+		if err != nil {
+			return err
+		}
+		if resp.Status == http.StatusOK {
+			chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
+			return nil
+		}
+		lastDoneFile := filepath.Join(s.dlDir, ".lastdone")
+		log.Printf("%s does not seem to exist anymore. Removing %s.", s.lastDone, lastDoneFile)
+		s.lastDone = ""
+		if err := os.Remove(lastDoneFile); err != nil {
+			if os.IsNotExist(err) {
+				log.Fatal("Failed to remove .lastdone file because it was already gone.")
+			}
+			return err
+		}
+
+		// restart from scratch
+		resp, err = chromedp.RunResponse(ctx, chromedp.Navigate("https://photos.google.com/"))
+		if err != nil {
+			return err
+		}
+		code := resp.Status
+		if code != http.StatusOK {
+			return fmt.Errorf("unexpected %d code when restarting to https://photos.google.com/", code)
+		}
 		chromedp.WaitReady("body", chromedp.ByQuery).Do(ctx)
-		return nil
 	}
 
 	if err := navToEnd(ctx); err != nil {
