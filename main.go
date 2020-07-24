@@ -445,8 +445,20 @@ func markDone(dldir, location string) error {
 	if *verboseFlag {
 		log.Printf("Marking %v as done", location)
 	}
-	// TODO(mpl): back up .lastdone before overwriting it, in case writing it fails.
-	if err := ioutil.WriteFile(filepath.Join(dldir, ".lastdone"), []byte(location), 0600); err != nil {
+	oldPath := filepath.Join(dldir, ".lastdone")
+	newPath := oldPath + ".bak"
+	if err := os.Rename(oldPath, newPath); err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+	}
+	if err := ioutil.WriteFile(oldPath, []byte(location), 0600); err != nil {
+		// restore from backup
+		if err := os.Rename(newPath, oldPath); err != nil {
+			if !os.IsNotExist(err) {
+				return err
+			}
+		}
 		return err
 	}
 	return nil
@@ -517,6 +529,9 @@ func (s *Session) download(ctx context.Context, location string) (string, error)
 				continue
 			}
 			if v.Name() == ".lastdone" {
+				continue
+			}
+			if v.Name() == ".lastdone.bak" {
 				continue
 			}
 			fileEntries = append(fileEntries, v)
