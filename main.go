@@ -315,7 +315,11 @@ func (s *Session) setFirstItem(ctx context.Context) error {
 func navToEnd(ctx context.Context) error {
 	// try jumping to the end of the page. detect we are there and have stopped
 	// moving when two consecutive screenshots are identical.
+	// a minimum floor of duplicate screenshots is used to overcome any 
+	// any false positives in determining the end of some larger libraries 
 	var previousScr, scr []byte
+	minAmountOfDuplicateScr := 3
+	amountOfDuplicateScr := 0
 	for {
 		chromedp.KeyEvent(kb.PageDown).Do(ctx)
 		chromedp.KeyEvent(kb.End).Do(ctx)
@@ -325,7 +329,15 @@ func navToEnd(ctx context.Context) error {
 			continue
 		}
 		if bytes.Equal(previousScr, scr) {
-			break
+			amountOfDuplicateScr++
+			if *verboseFlag {
+				log.Printf("Screen is equal to previous screen, waiting to hit threshold [%v/%v]", amountOfDuplicateScr, minAmountOfDuplicateScr)
+			}
+			if amountOfDuplicateScr == minAmountOfDuplicateScr {
+				break
+			}
+		} else {
+			amountOfDuplicateScr = 0
 		}
 		previousScr = scr
 		time.Sleep(tick)
