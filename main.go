@@ -359,7 +359,7 @@ func navToEnd(ctx context.Context) error {
 			break
 		}
 		previousScr = scr
-		time.Sleep(tick)
+		time.Sleep(10*tick)
 	}
 
 	if *verboseFlag {
@@ -417,6 +417,9 @@ func doRun(filePath string) error {
 
 // navLeft navigates to the next item to the left
 func navLeft(ctx context.Context) error {
+	var res []string
+	chromedp.EvaluateAsDevTools(`window.resize();`, &res)
+	time.Sleep(tick)
 	muNavWaiting.Lock()
 	listenEvents = true
 	muNavWaiting.Unlock()
